@@ -4,6 +4,7 @@ import (
 	"errors"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/transport"
+	"golang.org/x/xerrors"
 	"sync"
 	"time"
 )
@@ -61,6 +62,20 @@ func (n *node) Start() error {
 			if err != nil {
 				c <- err
 			}
+
+			// if destination packets != My address: we resend the packet to the next-hop
+			if pkt.Header.Destination != n.conf.Socket.GetAddress() {
+				header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)
+				packet := transport.Packet{Header: &header, Msg: pkt.Msg}
+				nextHop, exist := n.table.Get(pkt.Header.Destination)
+				if !exist {
+					c <- xerrors.Errorf("unknown destination address")
+				}
+				err = n.conf.Socket.Send(nextHop, packet, time.Second*1)
+				if err != nil {
+					c <- err
+				}
+			}
 		}
 	}(channelError)
 	select {
@@ -81,9 +96,13 @@ func (n *node) Stop() error {
 
 // Unicast implements peer.Messaging
 func (n *node) Unicast(dest string, msg transport.Message) error {
-	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.GetRoutingTable()[dest], dest, 0)
+	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
 	packet := transport.Packet{Header: &header, Msg: &msg}
-	return n.conf.Socket.Send(dest, packet, time.Second*1)
+	nextHop, exist := n.table.Get(dest)
+	if !exist {
+		return xerrors.Errorf("unknown destination address")
+	}
+	return n.conf.Socket.Send(nextHop, packet, time.Second*1)
 }
 
 // AddPeer implements peer.Service

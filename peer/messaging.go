@@ -130,8 +130,8 @@ func (sr *SafeRoutingTable) Copy() RoutingTable {
 	return tableCopy
 }
 
-// get return the value of an entry, bool == false if the entry doesn't exist
-func (sr *SafeRoutingTable) get(key string) (string, bool) {
+// Get return the value of an entry, bool == false if the entry doesn't exist
+func (sr *SafeRoutingTable) Get(key string) (string, bool) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
 	value, b := sr.R[key]

@@ -104,8 +104,8 @@ func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) 
 	}
 
 	s.muOuts.Lock()
-	defer s.muOuts.Unlock()
 	s.outs = append(s.outs, pkt.Copy())
+	s.muOuts.Unlock()
 
 	return nil
 }
@@ -138,8 +138,8 @@ func (s *Socket) Recv(timeout time.Duration) (transport.Packet, error) {
 	}
 
 	s.muIns.Lock()
-	defer s.muIns.Unlock()
 	s.ins = append(s.ins, packet.Copy())
+	s.muIns.Unlock()
 
 	return packet, nil
 }
@@ -172,7 +172,7 @@ func (s *Socket) GetOuts() []transport.Packet {
 
 	res := make([]transport.Packet, len(s.outs))
 
-	for i, pkt := range s.ins {
+	for i, pkt := range s.outs {
 		res[i] = pkt.Copy()
 	}
 

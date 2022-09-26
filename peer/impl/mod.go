@@ -61,27 +61,35 @@ func (n *node) Start() error {
 			if errors.Is(err, transport.TimeoutError(0)) {
 				continue
 			}
-			if err != nil {
-				c <- err
-			}
-
-			err = n.conf.MessageRegistry.ProcessPacket(pkt)
-			if err != nil {
-				c <- err
-			}
-			// if destination packets != My address: we resend the packet to the next-hop
-			if pkt.Header.Destination != n.conf.Socket.GetAddress() {
-				header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)
-				packet := transport.Packet{Header: &header, Msg: pkt.Msg}
-				nextHop, exist := n.table.Get(pkt.Header.Destination)
-				if !exist {
-					c <- xerrors.Errorf("unknown destination address")
-				}
-				err = n.conf.Socket.Send(nextHop, packet, time.Second*1)
+			go func() {
+				n.muWg.Lock()
+				n.wg += 1
+				n.muWg.Unlock()
 				if err != nil {
 					c <- err
 				}
-			}
+
+				err = n.conf.MessageRegistry.ProcessPacket(pkt)
+				if err != nil {
+					c <- err
+				}
+				// if destination packets != My address: we resend the packet to the next-hop
+				if pkt.Header.Destination != n.conf.Socket.GetAddress() {
+					header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)
+					packet := transport.Packet{Header: &header, Msg: pkt.Msg}
+					nextHop, exist := n.table.Get(pkt.Header.Destination)
+					if !exist {
+						c <- xerrors.Errorf("unknown destination address")
+					}
+					err = n.conf.Socket.Send(nextHop, packet, time.Second*1)
+					if err != nil {
+						c <- err
+					}
+				}
+				n.muWg.Lock()
+				n.wg -= 1
+				n.muWg.Unlock()
+			}()
 		}
 		n.muWg.Lock()
 		n.wg -= 1

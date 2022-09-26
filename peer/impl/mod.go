@@ -13,7 +13,7 @@ import (
 // function but you MUST NOT change its signature and package location.
 func NewPeer(conf peer.Configuration) peer.Peer {
 	// save the configuration of the node
-	node := node{conf: conf}
+	node := node{conf: conf, wg: 0}
 	// Initializing the routing table
 	node.table = peer.SafeRoutingTable{R: make(map[string]string)}
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
@@ -27,29 +27,36 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 type node struct {
 	peer.Peer
 	// boolean about the running state of the node
-	isRunning bool
+	muIsRunning sync.RWMutex
+	isRunning   bool
 	// keep the peer.Configuration:
 	conf peer.Configuration
 	//group of all goroutine launch by the node
-	wg sync.WaitGroup
+	muWg sync.RWMutex
+	wg   int
 	//route table
 	table peer.SafeRoutingTable
 }
 
 // Start implements peer.Service
 func (n *node) Start() error {
+	n.muIsRunning.Lock()
 	n.isRunning = true
+	n.muIsRunning.Unlock()
 	channelError := make(chan error, 1)
 	go func(c chan error) {
 		// we signal when the goroutine starts and when it ends
-		n.wg.Add(1)
-		defer n.wg.Add(-1)
+		n.muWg.Lock()
+		n.wg += 1
+		n.muWg.Unlock()
 
 		for {
+			n.muIsRunning.RLock()
 			if !n.isRunning { // loop should exit once the Stop function is called
-				c <- nil
+				n.muIsRunning.RUnlock()
 				break
 			}
+			n.muIsRunning.RUnlock()
 			pkt, err := n.conf.Socket.Recv(time.Second * 1)
 			if errors.Is(err, transport.TimeoutError(0)) {
 				continue
@@ -62,7 +69,6 @@ func (n *node) Start() error {
 			if err != nil {
 				c <- err
 			}
-
 			// if destination packets != My address: we resend the packet to the next-hop
 			if pkt.Header.Destination != n.conf.Socket.GetAddress() {
 				header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)
@@ -77,6 +83,9 @@ func (n *node) Start() error {
 				}
 			}
 		}
+		n.muWg.Lock()
+		n.wg -= 1
+		n.muWg.Unlock()
 	}(channelError)
 	select {
 	case returnError := <-channelError:
@@ -89,8 +98,17 @@ func (n *node) Start() error {
 // Stop implements peer.Service
 func (n *node) Stop() error {
 	// must block until all goroutines are done.
+	n.muIsRunning.Lock()
 	n.isRunning = false
-	n.wg.Wait()
+	n.muIsRunning.Unlock()
+	for {
+		n.muWg.Lock()
+		if n.wg > 0 {
+			n.muWg.Unlock()
+			break
+		}
+		n.muWg.Unlock()
+	}
 	return nil
 }
 

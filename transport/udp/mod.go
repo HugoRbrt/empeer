@@ -106,7 +106,6 @@ func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) 
 	s.muOuts.Lock()
 	s.outs = append(s.outs, pkt.Copy())
 	s.muOuts.Unlock()
-
 	return nil
 }
 
@@ -114,8 +113,9 @@ func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) 
 // the timeout is reached. In the case the timeout is reached, return a
 // TimeoutErr.
 func (s *Socket) Recv(timeout time.Duration) (transport.Packet, error) {
-
+	s.Lock()
 	conn := s.incomings[s.myAddr]
+	s.Unlock()
 
 	if timeout == 0 {
 		timeout = math.MaxInt64

@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"context"
 	"errors"
 	"github.com/rs/zerolog"
 	"go.dedis.ch/cs438/peer"
@@ -8,6 +9,7 @@ import (
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
+	"io"
 	"sync"
 	"time"
 )
@@ -16,12 +18,29 @@ import (
 // function but you MUST NOT change its signature and package location.
 func NewPeer(conf peer.Configuration) peer.Peer {
 	// save the configuration of the node
-	node := node{conf: conf, wg: 0}
+	node := node{conf: conf}
 	// Initializing the routing table
-	node.table = peer.SafeRoutingTable{R: make(map[string]string)}
+	node.table = ConcurrentRoutTable{R: make(map[string]string)}
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
+	//Set CallBack messages for every types of messages
+	node.SetMessageCallback()
 
 	return &node
+}
+
+func (n *node) SetMessageCallback() {
+	//set CallBack fot Chat Message
+	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, func(l *zerolog.Logger) registry.Exec {
+		return func(m types.Message, p transport.Packet) error {
+			l.With().
+				Str("packet_id", p.Header.PacketID).
+				Str("message_type", p.Msg.Type).
+				Str("source", p.Header.Source).
+				Logger()
+			return nil
+		}
+	}(&n.logger))
+	//set Callback for others... (in following homeworks)
 }
 
 // node implements a peer to build a Peerster system
@@ -29,81 +48,55 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 // - implements peer.Peer
 type node struct {
 	peer.Peer
-	// boolean about the running state of the node
-	muIsRunning sync.RWMutex
-	isRunning   bool
 	// keep the peer.Configuration:
 	conf peer.Configuration
+
+	// boolean about the running state of the node
+	ctx    context.Context
+	cancel context.CancelFunc
 	//group of all goroutine launch by the node
-	muWg sync.RWMutex
-	wg   int
+	wg sync.WaitGroup
 	//route table
-	table peer.SafeRoutingTable
+	table ConcurrentRoutTable
 	//log received messages
 	logger zerolog.Logger
 }
 
 // Start implements peer.Service
 func (n *node) Start() error {
-	n.muIsRunning.Lock()
-	n.isRunning = true
-	n.muIsRunning.Unlock()
+	// create a new context which allows goroutine to know if Stop() is call
+	n.ctx, n.cancel = context.WithCancel(context.Background())
 	channelError := make(chan error, 1)
-	go func(c chan error) {
-		// we signal when the goroutine starts and when it ends
-		n.muWg.Lock()
-		n.wg++
-		n.muWg.Unlock()
+	// we signal when the goroutine starts and when it ends
+	n.wg.Add(1)
 
+	go func(c chan error, ctx context.Context) {
+		defer n.wg.Done()
 		for {
-			n.muIsRunning.RLock()
-			if !n.isRunning { // loop should exit once the Stop function is called
-				n.muIsRunning.RUnlock()
-				break
+			// check if Stop was called (and stop goroutine if so)
+			select {
+			case <-ctx.Done():
+				return
+			default:
 			}
-			n.muIsRunning.RUnlock()
 
-			// The part where you register the handler. Must be done when you initialize
-			// your peer with every type of message expected.
-			n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, ExecChatMessage(&n.logger))
-			pkt, err := n.conf.Socket.Recv(time.Second * 1)
+			pkt, err := n.conf.Socket.Recv(time.Millisecond * 10)
 			if errors.Is(err, transport.TimeoutError(0)) {
 				continue
+			} else if err != nil {
+				c <- err
 			}
-			go func() {
-				n.muWg.Lock()
-				n.wg++
-				n.muWg.Unlock()
+			n.wg.Add(1)
+			go func(c chan error) {
+				defer n.wg.Done()
+				err := n.ProcessMessage(pkt)
 				if err != nil {
 					c <- err
 				}
-
-				err = n.conf.MessageRegistry.ProcessPacket(pkt)
-				if err != nil {
-					c <- err
-				}
-				// if destination packets != My address: we resend the packet to the next-hop
-				if pkt.Header.Destination != n.conf.Socket.GetAddress() {
-					header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)
-					packet := transport.Packet{Header: &header, Msg: pkt.Msg}
-					nextHop, exist := n.table.Get(pkt.Header.Destination)
-					if !exist {
-						c <- xerrors.Errorf("unknown destination address")
-					}
-					err = n.conf.Socket.Send(nextHop, packet, time.Second*1)
-					if err != nil {
-						c <- err
-					}
-				}
-				n.muWg.Lock()
-				n.wg--
-				n.muWg.Unlock()
-			}()
+			}(channelError)
 		}
-		n.muWg.Lock()
-		n.wg--
-		n.muWg.Unlock()
-	}(channelError)
+	}(channelError, n.ctx)
+
 	select {
 	case returnError := <-channelError:
 		return returnError
@@ -112,20 +105,32 @@ func (n *node) Start() error {
 	}
 }
 
+// ProcessMessage permit to process a message (relay, register...)
+func (n *node) ProcessMessage(pkt transport.Packet) error {
+	// message registration
+	err := n.conf.MessageRegistry.ProcessPacket(pkt)
+	if err != nil {
+		return err
+	}
+	// relay the message to the next hop if the node is not it's destination
+	if pkt.Header.Destination != n.conf.Socket.GetAddress() {
+		header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)
+		packet := transport.Packet{Header: &header, Msg: pkt.Msg}
+		nextHop, exist := n.table.Get(pkt.Header.Destination)
+		if !exist {
+			return xerrors.Errorf("unknown destination address")
+		}
+		return n.conf.Socket.Send(nextHop, packet, time.Millisecond*10)
+	}
+	return nil
+}
+
 // Stop implements peer.Service
 func (n *node) Stop() error {
-	// must block until all goroutines are done.
-	n.muIsRunning.Lock()
-	n.isRunning = false
-	n.muIsRunning.Unlock()
-	for {
-		n.muWg.Lock()
-		if n.wg > 0 {
-			n.muWg.Unlock()
-			break
-		}
-		n.muWg.Unlock()
-	}
+	// warn all goroutine to stop
+	n.cancel()
+	//block until all goroutine are done
+	n.wg.Wait()
 	return nil
 }
 
@@ -164,13 +169,54 @@ func (n *node) SetRoutingEntry(origin, relayAddr string) {
 	}
 }
 
-func ExecChatMessage(logger *zerolog.Logger) registry.Exec {
-	return func(m types.Message, p transport.Packet) error {
-		logger.With().
-			Str("packet_id", p.Header.PacketID).
-			Str("message_type", p.Msg.Type).
-			Str("source", p.Header.Source).
-			Logger()
-		return nil
+// ConcurrentRoutTable define a safe way to access the RoutingTable.
+type ConcurrentRoutTable struct {
+	R  peer.RoutingTable
+	mu sync.Mutex
+}
+
+func (sr *ConcurrentRoutTable) String() string {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	return sr.R.String()
+}
+
+// DisplayGraph displays the routing table as a graphviz graph.
+func (sr *ConcurrentRoutTable) DisplayGraph(out io.Writer) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	sr.R.DisplayGraph(out)
+}
+
+// SetEntry set a routing entry and override it if the entry already exist
+func (sr *ConcurrentRoutTable) SetEntry(key, str string) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	sr.R[key] = str
+}
+
+// DeleteEntry delete a routing entry or do nothing if the entry doesn't exist
+func (sr *ConcurrentRoutTable) DeleteEntry(key string) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	delete(sr.R, key)
+}
+
+// Copy return a copy of the RoutingTable
+func (sr *ConcurrentRoutTable) Copy() peer.RoutingTable {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	tableCopy := make(map[string]string)
+	for key, value := range sr.R {
+		tableCopy[key] = value
 	}
+	return tableCopy
+}
+
+// Get return the corresponding value and boolean corresponding to the existence of the value
+func (sr *ConcurrentRoutTable) Get(key string) (string, bool) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	value, b := sr.R[key]
+	return value, b
 }

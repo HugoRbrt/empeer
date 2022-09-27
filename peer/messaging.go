@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 	"time"
 
 	"go.dedis.ch/cs438/transport"
@@ -89,51 +88,4 @@ func (r RoutingTable) DisplayGraph(out io.Writer) {
 	}
 
 	fmt.Fprint(out, "}\n")
-}
-
-// SafeRoutingTable define a safe way to acces the RoutingTable.
-type SafeRoutingTable struct {
-	R  RoutingTable
-	mu sync.Mutex
-}
-
-func (sr *SafeRoutingTable) String() string { sr.mu.Lock(); defer sr.mu.Unlock(); return sr.R.String() }
-
-func (sr *SafeRoutingTable) DisplayGraph(out io.Writer) {
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-	sr.R.DisplayGraph(out)
-}
-
-// SetEntry set a routing entry and override it if the entry already exist
-func (sr *SafeRoutingTable) SetEntry(key, str string) {
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-	sr.R[key] = str
-}
-
-// DeleteEntry delete a routing entry or do nothing if the entry doesn't exist
-func (sr *SafeRoutingTable) DeleteEntry(key string) {
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-	delete(sr.R, key)
-}
-
-// Copy return a deep copy of the RoutingTable
-func (sr *SafeRoutingTable) Copy() RoutingTable {
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-	tableCopy := make(map[string]string)
-	for key, value := range sr.R {
-		tableCopy[key] = value
-	}
-	return tableCopy
-}
-
-// Get return the value of an entry, bool == false if the entry doesn't exist
-func (sr *SafeRoutingTable) Get(key string) (string, bool) {
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-	value, b := sr.R[key]
-	return value, b
 }

@@ -52,7 +52,7 @@ func (n *node) Start() error {
 	go func(c chan error) {
 		// we signal when the goroutine starts and when it ends
 		n.muWg.Lock()
-		n.wg += 1
+		n.wg++
 		n.muWg.Unlock()
 
 		for {
@@ -72,7 +72,7 @@ func (n *node) Start() error {
 			}
 			go func() {
 				n.muWg.Lock()
-				n.wg += 1
+				n.wg++
 				n.muWg.Unlock()
 				if err != nil {
 					c <- err
@@ -96,12 +96,12 @@ func (n *node) Start() error {
 					}
 				}
 				n.muWg.Lock()
-				n.wg -= 1
+				n.wg--
 				n.muWg.Unlock()
 			}()
 		}
 		n.muWg.Lock()
-		n.wg -= 1
+		n.wg--
 		n.muWg.Unlock()
 	}(channelError)
 	select {

@@ -2,7 +2,6 @@ package udp
 
 import (
 	"errors"
-	"math"
 	"net"
 	"os"
 	"sync"
@@ -11,28 +10,21 @@ import (
 	"go.dedis.ch/cs438/transport"
 )
 
-const bufSize = 65000
+const bufferSizer = 65000
 
 // NewUDP returns a new udp transport implementation.
 func NewUDP() transport.Transport {
-	return &UDP{
-		incomings: make(map[string]net.UDPConn),
-	}
+	return &UDP{}
 }
 
 // UDP implements a transport layer using UDP
 //
 // - implements transport.Transport
 type UDP struct {
-	sync.RWMutex
-	// map between addresses and established UDP connections
-	incomings map[string]net.UDPConn
 }
 
 // CreateSocket implements transport.Transport
-func (n *UDP) CreateSocket(address string) (transport.ClosableSocket, error) {
-	n.Lock()
-	defer n.Unlock()
+func (u *UDP) CreateSocket(address string) (transport.ClosableSocket, error) {
 	udpAdr, err := net.ResolveUDPAddr("udp4", address)
 	if err != nil {
 		return &Socket{}, err
@@ -41,12 +33,9 @@ func (n *UDP) CreateSocket(address string) (transport.ClosableSocket, error) {
 	if err != nil {
 		return &Socket{}, err
 	}
-	// add listening connection at our own address
-	n.incomings[udpCon.LocalAddr().String()] = *udpCon
 
 	return &Socket{
-		UDP:    n,
-		myAddr: udpCon.LocalAddr().String(),
+		conn: *udpCon,
 	}, nil
 }
 
@@ -55,41 +44,37 @@ func (n *UDP) CreateSocket(address string) (transport.ClosableSocket, error) {
 // - implements transport.Socket
 // - implements transport.ClosableSocket
 type Socket struct {
-	*UDP
-	myAddr string
-	//mutex controlling access of ins packets
-	muIns sync.RWMutex
-	ins   []transport.Packet
-	//mutex controlling access of outs packets
-	muOuts sync.RWMutex
-	outs   []transport.Packet
+	// state of established udp connection
+	conn net.UDPConn
+	// list of incoming packets
+	ins packets
+	// list of outgoing packets
+	outs packets
 }
 
 // Close implements transport.Socket. It returns an error if already closed.
 func (s *Socket) Close() error {
-	s.Lock()
-	defer s.Unlock()
-	udpConn := s.incomings[s.myAddr]
-	err := udpConn.Close()
-	if err != nil {
-		return err
-	}
-	delete(s.incomings, s.myAddr)
-
-	return nil
+	err := s.conn.Close()
+	return err
 }
 
 // Send implements transport.Socket
 func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) error {
 
 	udpAdr, err := net.ResolveUDPAddr("udp4", dest)
+	if err != nil {
+		return err
+	}
 	conn, err := net.DialUDP("udp4", nil, udpAdr)
 	if err != nil {
 		return err
 	}
 
-	if timeout == 0 {
-		timeout = math.MaxInt64
+	if timeout != 0 {
+		err = conn.SetWriteDeadline(time.Now().Add(timeout))
+		if err != nil {
+			return err
+		}
 	}
 
 	data, err := pkt.Marshal()
@@ -97,15 +82,12 @@ func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) 
 		return err
 	}
 
-	err = conn.SetWriteDeadline(time.Now().Add(timeout))
 	_, errSd := conn.Write(data)
 	if errSd != nil {
 		return errSd
 	}
 
-	s.muOuts.Lock()
-	s.outs = append(s.outs, pkt.Copy())
-	s.muOuts.Unlock()
+	s.outs.Add(pkt.Copy())
 	return nil
 }
 
@@ -113,21 +95,20 @@ func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) 
 // the timeout is reached. In the case the timeout is reached, return a
 // TimeoutErr.
 func (s *Socket) Recv(timeout time.Duration) (transport.Packet, error) {
-	s.Lock()
-	conn := s.incomings[s.myAddr]
-	s.Unlock()
 
-	if timeout == 0 {
-		timeout = math.MaxInt64
+	if timeout != 0 {
+		err := s.conn.SetReadDeadline(time.Now().Add(timeout))
+		if err != nil {
+			return transport.Packet{}, err
+		}
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(timeout))
-	buffer := make([]byte, bufSize)
-	readlen, _, errRcv := conn.ReadFromUDP(buffer)
+	buffer := make([]byte, bufferSizer)
+	readlen, _, errRcv := s.conn.ReadFromUDP(buffer)
+
 	if errors.Is(errRcv, os.ErrDeadlineExceeded) {
 		return transport.Packet{}, transport.TimeoutError(0)
-	}
-	if errRcv != nil {
+	} else if errRcv != nil {
 		return transport.Packet{}, errRcv
 	}
 
@@ -137,9 +118,7 @@ func (s *Socket) Recv(timeout time.Duration) (transport.Packet, error) {
 		return transport.Packet{}, err
 	}
 
-	s.muIns.Lock()
-	s.ins = append(s.ins, packet.Copy())
-	s.muIns.Unlock()
+	s.ins.Add(packet.Copy())
 
 	return packet, nil
 }
@@ -148,31 +127,43 @@ func (s *Socket) Recv(timeout time.Duration) (transport.Packet, error) {
 // be useful in the case one provided a :0 address, which makes the system use a
 // random free port.
 func (s *Socket) GetAddress() string {
-	return s.myAddr
+	return s.conn.LocalAddr().String()
 }
 
 // GetIns implements transport.Socket
 func (s *Socket) GetIns() []transport.Packet {
-	s.muIns.RLock()
-	defer s.muIns.RUnlock()
-
-	res := make([]transport.Packet, len(s.ins))
-
-	for i, pkt := range s.ins {
-		res[i] = pkt.Copy()
-	}
-
-	return res
+	return s.ins.GetCopy()
 }
 
 // GetOuts implements transport.Socket
 func (s *Socket) GetOuts() []transport.Packet {
-	s.muOuts.RLock()
-	defer s.muOuts.RUnlock()
+	return s.outs.GetCopy()
+}
 
-	res := make([]transport.Packet, len(s.outs))
+// UDP implements a transport layer using UDP
+//
+// - implements transport.Transport
+type packets struct {
+	mu   sync.RWMutex
+	list []transport.Packet
+}
 
-	for i, pkt := range s.outs {
+// Add packet to a packets list
+func (l *packets) Add(pkt transport.Packet) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.list = append(l.list, pkt)
+}
+
+// GetCopy return a packet’s list copy
+func (l *packets) GetCopy() []transport.Packet {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	res := make([]transport.Packet, len(l.list))
+
+	for i, pkt := range l.list {
 		res[i] = pkt.Copy()
 	}
 

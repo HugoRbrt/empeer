@@ -4,6 +4,7 @@ import (
 	"errors"
 	"github.com/rs/zerolog"
 	"go.dedis.ch/cs438/peer"
+	"go.dedis.ch/cs438/registry"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
@@ -64,7 +65,7 @@ func (n *node) Start() error {
 
 			// The part where you register the handler. Must be done when you initialize
 			// your peer with every type of message expected.
-			n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
+			n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, ExecChatMessage(&n.logger))
 			pkt, err := n.conf.Socket.Recv(time.Second * 1)
 			if errors.Is(err, transport.TimeoutError(0)) {
 				continue
@@ -163,12 +164,13 @@ func (n *node) SetRoutingEntry(origin, relayAddr string) {
 	}
 }
 
-func (n node) ExecChatMessage(m types.Message, p transport.Packet) error {
-	logger := n.logger
-	logger.With().
-		Str("packet_id", p.Header.PacketID).
-		Str("message_type", p.Msg.Type).
-		Str("source", p.Header.Source).
-		Logger()
-	return nil
+func ExecChatMessage(logger *zerolog.Logger) registry.Exec {
+	return func(m types.Message, p transport.Packet) error {
+		logger.With().
+			Str("packet_id", p.Header.PacketID).
+			Str("message_type", p.Msg.Type).
+			Str("source", p.Header.Source).
+			Logger()
+		return nil
+	}
 }

@@ -2,8 +2,10 @@ package impl
 
 import (
 	"errors"
+	"github.com/rs/zerolog"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/transport"
+	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
 	"sync"
 	"time"
@@ -36,6 +38,8 @@ type node struct {
 	wg   int
 	//route table
 	table peer.SafeRoutingTable
+	//log received messages
+	logger zerolog.Logger
 }
 
 // Start implements peer.Service
@@ -57,6 +61,10 @@ func (n *node) Start() error {
 				break
 			}
 			n.muIsRunning.RUnlock()
+
+			// The part where you register the handler. Must be done when you initialize
+			// your peer with every type of message expected.
+			n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
 			pkt, err := n.conf.Socket.Recv(time.Second * 1)
 			if errors.Is(err, transport.TimeoutError(0)) {
 				continue
@@ -153,4 +161,14 @@ func (n *node) SetRoutingEntry(origin, relayAddr string) {
 	} else {
 		n.table.SetEntry(origin, relayAddr)
 	}
+}
+
+func (n node) ExecChatMessage(m types.Message, p transport.Packet) error {
+	logger := n.logger
+	logger.With().
+		Str("packet_id", p.Header.PacketID).
+		Str("message_type", p.Msg.Type).
+		Str("source", p.Header.Source).
+		Logger()
+	return nil
 }

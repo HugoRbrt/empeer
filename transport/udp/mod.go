@@ -2,6 +2,7 @@ package udp
 
 import (
 	"errors"
+	"go.dedis.ch/cs438/internal/traffic"
 	"math"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ const bufSize = 65000
 func NewUDP() transport.Transport {
 	return &UDP{
 		incomings: make(map[string]net.UDPConn),
+		traffic:   traffic.NewTraffic(),
 	}
 }
 
@@ -27,6 +29,7 @@ type UDP struct {
 	sync.RWMutex
 	// map between addresses and established UDP connections
 	incomings map[string]net.UDPConn
+	traffic   *traffic.Traffic
 }
 
 // CreateSocket implements transport.Transport
@@ -105,6 +108,7 @@ func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) 
 
 	s.muOuts.Lock()
 	s.outs = append(s.outs, pkt.Copy())
+	s.traffic.LogSent(pkt.Header.RelayedBy, dest, pkt)
 	s.muOuts.Unlock()
 	return nil
 }
@@ -139,6 +143,7 @@ func (s *Socket) Recv(timeout time.Duration) (transport.Packet, error) {
 
 	s.muIns.Lock()
 	s.ins = append(s.ins, packet.Copy())
+	s.traffic.LogRecv(packet.Header.RelayedBy, s.myAddr, packet)
 	s.muIns.Unlock()
 
 	return packet, nil

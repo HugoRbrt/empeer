@@ -22,7 +22,7 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	// Initializing the routing table
 	node.table = ConcurrentRoutTable{R: make(map[string]string)}
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
-	//Set CallBack messages for every types of messages
+	//Set CallBack messages for every type of messages
 	node.SetMessageCallback()
 
 	return &node

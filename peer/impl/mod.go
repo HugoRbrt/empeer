@@ -32,11 +32,7 @@ func (n *node) SetMessageCallback() {
 	//set CallBack fot Chat Message
 	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, func(l *zerolog.Logger) registry.Exec {
 		return func(m types.Message, p transport.Packet) error {
-			l.With().
-				Str("packet_id", p.Header.PacketID).
-				Str("message_type", p.Msg.Type).
-				Str("source", p.Header.Source).
-				Logger()
+			//	TODO: register message
 			return nil
 		}
 	}(&n.logger))

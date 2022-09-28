@@ -108,10 +108,7 @@ func (n *node) Start() error {
 // ProcessMessage permit to process a message (relay, register...)
 func (n *node) ProcessMessage(pkt transport.Packet) error {
 	// message registration
-	err := n.conf.MessageRegistry.ProcessPacket(pkt)
-	if err != nil {
-		return err
-	}
+	_ = n.conf.MessageRegistry.ProcessPacket(pkt)
 	// relay the message to the next hop if the node is not it's destination
 	if pkt.Header.Destination != n.conf.Socket.GetAddress() {
 		header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)

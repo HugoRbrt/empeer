@@ -3,9 +3,8 @@ package impl
 import (
 	"context"
 	"errors"
-	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/peer"
-	"go.dedis.ch/cs438/registry"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
@@ -22,21 +21,21 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	// Initializing the routing table
 	node.table = ConcurrentRoutTable{R: make(map[string]string)}
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
-	//Set CallBack messages for every type of messages
-	node.SetMessageCallback()
-
 	return &node
 }
 
-func (n *node) SetMessageCallback() {
-	//set CallBack fot Chat Message
-	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, func(l *zerolog.Logger) registry.Exec {
-		return func(m types.Message, p transport.Packet) error {
-			//	TODO: register message
-			return nil
-		}
-	}(&n.logger))
-	//set Callback for others... (in following homeworks)
+func ExecChatMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	chatMsg, ok := msg.(*types.ChatMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+
+	// do your stuff here with chatMsg...
+	// but what stuff we have to do ?
+	log.Info().Msg(chatMsg.HTML())
+
+	return nil
 }
 
 // node implements a peer to build a Peerster system
@@ -46,7 +45,6 @@ type node struct {
 	peer.Peer
 	// keep the peer.Configuration:
 	conf peer.Configuration
-
 	// boolean about the running state of the node
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -54,8 +52,6 @@ type node struct {
 	wg sync.WaitGroup
 	//route table
 	table ConcurrentRoutTable
-	//log received messages
-	logger zerolog.Logger
 }
 
 // Start implements peer.Service
@@ -75,7 +71,7 @@ func (n *node) Start() error {
 				return
 			default:
 			}
-
+			n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, ExecChatMessage)
 			pkt, err := n.conf.Socket.Recv(time.Millisecond * 10)
 			if errors.Is(err, transport.TimeoutError(0)) {
 				continue
@@ -104,7 +100,10 @@ func (n *node) Start() error {
 // ProcessMessage permit to process a message (relay, register...)
 func (n *node) ProcessMessage(pkt transport.Packet) error {
 	// message registration
-	_ = n.conf.MessageRegistry.ProcessPacket(pkt)
+	err := n.conf.MessageRegistry.ProcessPacket(pkt)
+	if err != nil {
+		log.Info().Msgf("%v", err.Error())
+	}
 	// relay the message to the next hop if the node is not it's destination
 	if pkt.Header.Destination != n.conf.Socket.GetAddress() {
 		header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)

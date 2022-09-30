@@ -2,6 +2,7 @@ package udp
 
 import (
 	"errors"
+	"math"
 	"net"
 	"os"
 	"sync"
@@ -10,7 +11,7 @@ import (
 	"go.dedis.ch/cs438/transport"
 )
 
-const bufferSizer = 65000
+const bufferSize = 65000
 
 // NewUDP returns a new udp transport implementation.
 func NewUDP() transport.Transport {
@@ -70,11 +71,12 @@ func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) 
 		return err
 	}
 
-	if timeout != 0 {
-		err = conn.SetWriteDeadline(time.Now().Add(timeout))
-		if err != nil {
-			return err
-		}
+	if timeout <= 0 {
+		timeout = math.MaxInt64
+	}
+	err = conn.SetWriteDeadline(time.Now().Add(timeout))
+	if err != nil {
+		return err
 	}
 
 	data, err := pkt.Marshal()
@@ -96,14 +98,14 @@ func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) 
 // TimeoutErr.
 func (s *Socket) Recv(timeout time.Duration) (transport.Packet, error) {
 
-	if timeout != 0 {
+	if timeout > 0 {
 		err := s.conn.SetReadDeadline(time.Now().Add(timeout))
 		if err != nil {
 			return transport.Packet{}, err
 		}
 	}
 
-	buffer := make([]byte, bufferSizer)
+	buffer := make([]byte, bufferSize)
 	readlen, _, errRcv := s.conn.ReadFromUDP(buffer)
 
 	if errors.Is(errRcv, os.ErrDeadlineExceeded) {

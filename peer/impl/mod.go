@@ -31,9 +31,7 @@ func ExecChatMessage(msg types.Message, pkt transport.Packet) error {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 
-	// do your stuff here with chatMsg...
-	// but what stuff we have to do ?
-	log.Info().Msg(chatMsg.HTML())
+	log.Info().Msg(chatMsg.String())
 
 	return nil
 }
@@ -61,6 +59,7 @@ func (n *node) Start() error {
 	channelError := make(chan error, 1)
 	// we signal when the goroutine starts and when it ends
 	n.wg.Add(1)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, ExecChatMessage)
 
 	go func(c chan error, ctx context.Context) {
 		defer n.wg.Done()
@@ -71,7 +70,6 @@ func (n *node) Start() error {
 				return
 			default:
 			}
-			n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, ExecChatMessage)
 			pkt, err := n.conf.Socket.Recv(time.Millisecond * 10)
 			if errors.Is(err, transport.TimeoutError(0)) {
 				continue
@@ -99,13 +97,16 @@ func (n *node) Start() error {
 
 // ProcessMessage permit to process a message (relay, register...)
 func (n *node) ProcessMessage(pkt transport.Packet) error {
-	// message registration
-	err := n.conf.MessageRegistry.ProcessPacket(pkt)
-	if err != nil {
-		log.Info().Msgf("%v", err.Error())
-	}
-	// relay the message to the next hop if the node is not it's destination
-	if pkt.Header.Destination != n.conf.Socket.GetAddress() {
+	// is this message for this node?
+	if pkt.Header.Destination == n.conf.Socket.GetAddress() {
+		// yes: register it
+		err := n.conf.MessageRegistry.ProcessPacket(pkt)
+		if err != nil {
+			log.Info().Msgf("Error: %v", err.Error())
+			return err
+		}
+	} else {
+		// no: relay the message to the next hop if it exists
 		header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)
 		packet := transport.Packet{Header: &header, Msg: pkt.Msg}
 		nextHop, exist := n.table.Get(pkt.Header.Destination)
@@ -134,7 +135,7 @@ func (n *node) Unicast(dest string, msg transport.Message) error {
 	if !exist {
 		return xerrors.Errorf("unknown destination address")
 	}
-	return n.conf.Socket.Send(nextHop, packet, time.Second*1)
+	return n.conf.Socket.Send(nextHop, packet, time.Millisecond*10)
 }
 
 // AddPeer implements peer.Service

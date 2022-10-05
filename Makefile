@@ -8,6 +8,7 @@ xtest: setbin test
 
 setbin:
 	GOOS=darwin GOARCH=amd64 go build -o ./peer/tests/integration/node.darwin.amd64 ./gui/; \
+	GOOS=darwin GOARCH=arm64 go build -o ./peer/tests/integration/node.darwin.arm64 ./gui/; \
 	GOOS=linux GOARCH=amd64 go build -o ./peer/tests/integration/node.linux.amd64 ./gui/;
 
 test_hw0: test_unit_hw0 test_int_hw0

@@ -122,7 +122,7 @@ func (n *node) ProcessMessage(pkt transport.Packet) error {
 func (n *node) Stop() error {
 	// warn all goroutine to stop
 	n.cancel()
-	//block until all goroutine are done
+	//block until all goroutines are done
 	n.wg.Wait()
 	return nil
 }

@@ -9,6 +9,8 @@ import (
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
 	"io"
+	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -20,11 +22,12 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node := node{conf: conf}
 	// Initializing the routing table
 	node.table = ConcurrentRoutTable{R: make(map[string]string)}
+	node.rumors.Init()
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
 	return &node
 }
 
-func ExecChatMessage(msg types.Message, pkt transport.Packet) error {
+func (n *node) ExecChatMessage(msg types.Message, pkt transport.Packet) error {
 	// cast the message to its actual type. You assume it is the right type.
 	chatMsg, ok := msg.(*types.ChatMessage)
 	if !ok {
@@ -34,6 +37,63 @@ func ExecChatMessage(msg types.Message, pkt transport.Packet) error {
 	log.Info().Msg(chatMsg.String())
 
 	return nil
+}
+
+func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	rumorsMsg, ok := msg.(*types.RumorsMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+
+	// Send back an AckMessage to the source
+	// TODO: fill the status message
+	statusMsg := types.StatusMessage{}
+	ack := types.AckMessage{
+		AckedPacketID: pkt.Header.PacketID,
+		Status:        statusMsg,
+	}
+	transAck, err := n.conf.MessageRegistry.MarshalMessage(&ack)
+	ackHeader := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), pkt.Header.Source, 0)
+	ackPacket := transport.Packet{Header: &ackHeader, Msg: &transAck}
+	if err != nil {
+		return err
+	}
+	err = n.conf.Socket.Send(pkt.Header.Source, ackPacket, time.Millisecond*10)
+	if err != nil {
+		return err
+	}
+
+	// Process each expected rumor contained in the RumorsMessage
+	for _, rumor := range rumorsMsg.Rumors {
+		// we ignore not expected rumors
+		if !n.rumors.IsExpected(rumor.Origin, rumor.Sequence) {
+			log.Info().Msg("broadcast NOT EXPECTED, origin:" + rumor.Origin + "seq:" + strconv.FormatUint(uint64(rumor.Sequence), 10))
+			continue
+		}
+		// process rumor’s embedded message
+		packet := transport.Packet{
+			Header: pkt.Header,
+			Msg:    rumor.Msg,
+		}
+		err := n.conf.MessageRegistry.ProcessPacket(packet)
+		if err != nil {
+			return err
+		}
+		n.rumors.process(rumor.Origin)
+	}
+
+	// Send the RumorsMessage to another random neighbor
+	err, rdmNeighbor := n.table.GetRandomNeighbors([]string{n.conf.Socket.GetAddress()})
+	if err != nil {
+		return err
+	}
+	headerRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), rdmNeighbor, 0)
+	pktRelay := transport.Packet{
+		Header: &headerRelay,
+		Msg:    pkt.Msg,
+	}
+	return n.conf.Socket.Send(rdmNeighbor, pktRelay, time.Millisecond*10)
 }
 
 // node implements a peer to build a Peerster system
@@ -50,6 +110,8 @@ type node struct {
 	wg sync.WaitGroup
 	//route table
 	table ConcurrentRoutTable
+	// Broadcast functionality manager:
+	rumors RumorsManaged
 }
 
 // Start implements peer.Service
@@ -59,7 +121,9 @@ func (n *node) Start() error {
 	channelError := make(chan error, 1)
 	// we signal when the goroutine starts and when it ends
 	n.wg.Add(1)
-	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, ExecChatMessage)
+	// add handler associated to all known message types
+	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.RumorsMessage{}, n.ExecRumorsMessage)
 
 	go func(c chan error, ctx context.Context) {
 		defer n.wg.Done()
@@ -138,6 +202,53 @@ func (n *node) Unicast(dest string, msg transport.Message) error {
 	return n.conf.Socket.Send(nextHop, packet, time.Millisecond*10)
 }
 
+// Broadcast implements peer.Messaging
+func (n *node) Broadcast(msg transport.Message) error {
+	// Process the message locally
+	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), 0)
+	pkt := transport.Packet{Header: &header, Msg: &msg}
+	err := n.conf.MessageRegistry.ProcessPacket(pkt)
+	if err != nil {
+		return err
+	}
+	n.rumors.process(n.conf.Socket.GetAddress())
+
+	// pick a random neighbor
+	err, neighbor := n.table.GetRandomNeighbors([]string{n.conf.Socket.GetAddress()})
+	if err != nil {
+		return err
+	}
+	// create RumorsMessage containing one Rumor (embeds msg)
+	rumors := types.RumorsMessage{
+		Rumors: []types.Rumor{
+			{
+				Origin:   n.conf.Socket.GetAddress(),
+				Sequence: n.rumors.getSeq(),
+				Msg:      &msg,
+			},
+		},
+	}
+	n.rumors.incSeq()
+	transMsg, err := n.conf.MessageRegistry.MarshalMessage(rumors)
+	if err != nil {
+		return err
+	}
+	hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
+	pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
+	if err != nil {
+		return err
+	}
+	//send RumorsMessage to a random neighbor
+	err = n.conf.Socket.Send(neighbor, pkToRelay, time.Millisecond*10)
+	if err != nil {
+		return err
+	}
+	log.Info().Msg("DONE")
+
+	//TODO: wait the Ack Msg
+	return err
+}
+
 // AddPeer implements peer.Service
 func (n *node) AddPeer(addresses ...string) {
 	for _, addr := range addresses {
@@ -212,4 +323,93 @@ func (sr *ConcurrentRoutTable) Get(key string) (string, bool) {
 	defer sr.mu.Unlock()
 	value, b := sr.R[key]
 	return value, b
+}
+
+// GetNeighbors return the list of node's neighbors
+func (sr *ConcurrentRoutTable) GetNeighbors() []string {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	var b []string
+	for key, element := range sr.R {
+		if key == element {
+			b = append(b, key)
+		}
+	}
+	return b
+}
+
+// GetRandomNeighbors return a random neighbor of the node which is node in except Array
+func (sr *ConcurrentRoutTable) GetRandomNeighbors(except []string) (error, string) {
+	allNeighbors := (*sr).GetNeighbors()
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	var neighborsExcept []string
+	for _, n := range allNeighbors {
+		remove := false
+		for _, e := range except {
+			if n == e {
+				remove = true
+			}
+		}
+		if !remove {
+			neighborsExcept = append(neighborsExcept, n)
+		}
+	}
+	if len(neighborsExcept) == 0 {
+		return xerrors.Errorf("no random neighbors found"), ""
+	}
+	rdmNeighbor := neighborsExcept[rand.Int()%len(neighborsExcept)]
+	log.Info().Msg("neighbor found:" + rdmNeighbor)
+	return nil, rdmNeighbor
+}
+
+type RumorsManaged struct {
+	// list of processed rumors
+	R  map[string]uint
+	mu sync.RWMutex
+	// Counter of Broadcast messages made by the node
+	sequence uint
+}
+
+// Init initialize processedRumors
+func (pr *RumorsManaged) Init() {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	(*pr).R = make(map[string]uint)
+	(*pr).sequence = 1
+}
+
+// IsExpected return if a rumors is expected by a node
+func (pr *RumorsManaged) IsExpected(addr string, sequence uint) bool {
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+	return (*pr).R[addr]+1 == sequence
+}
+
+// IsExpected return if a rumors is expected by a node
+func (pr *RumorsManaged) process(addr string) {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	(*pr).R[addr]++
+}
+
+// getView return a view (all the rumors the node has processed so far)
+func (pr *RumorsManaged) getView() map[string]uint {
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+	mapCopy := make(map[string]uint)
+	for k, v := range (*pr).R {
+		mapCopy[k] = v
+	}
+	return mapCopy
+}
+
+// incSeq increment the sequence number (after sending a broadcast message)
+func (pr *RumorsManaged) incSeq() {
+	(*pr).sequence++
+}
+
+// getSeq return the sequence number of the last broadcast made by this node
+func (pr *RumorsManaged) getSeq() uint {
+	return (*pr).sequence
 }

@@ -10,6 +10,7 @@ import (
 	"golang.org/x/xerrors"
 	"io"
 	"math/rand"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -33,6 +34,7 @@ func (n *node) ExecChatMessage(msg types.Message, pkt transport.Packet) error {
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
+	_ = pkt
 
 	log.Info().Msg(chatMsg.String())
 
@@ -100,6 +102,39 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 	return nil
 }
 
+func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	statusMsg, ok := msg.(*types.StatusMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+
+	if reflect.DeepEqual(statusMsg, n.rumors.GetView()) {
+		// if Both peers have the same view.
+		// then ContinueMongering with probability 'n.conf.ContinueMongering'
+		if rand.Float64() < n.conf.ContinueMongering || n.conf.ContinueMongering == 1 {
+			return n.SendView([]string{pkt.Header.Source}, "")
+		}
+		return nil
+	}
+	iDontHave := CompareView(n.rumors.GetView(), *statusMsg)
+	if len(iDontHave) > 0 {
+		// has Rumors that the remote peer doesn't have.
+		// then send a status message to the remote peer
+		err := n.SendView([]string{}, pkt.Header.Source)
+		if err != nil {
+			return err
+		}
+	}
+	itDoesntHave := CompareView(*statusMsg, n.rumors.GetView())
+	if len(itDoesntHave) > 0 {
+		// remote peer has Rumors that the peer doesn't have
+		// then sent rumors that remote peer doesn't have (in order of increasing sequence number)
+		return n.sendDiffView(*statusMsg, pkt.Header.Source)
+	}
+	return nil
+}
+
 // node implements a peer to build a Peerster system
 //
 // - implements peer.Peer
@@ -126,6 +161,7 @@ func (n *node) Start() error {
 	// add handler associated to all known message types
 	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.RumorsMessage{}, n.ExecRumorsMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.StatusMessage{}, n.ExecStatusMessage)
 
 	// we signal when the goroutine starts and when it ends
 	n.wg.Add(1)
@@ -285,6 +321,7 @@ func (n *node) SetRoutingEntry(origin, relayAddr string) {
 	}
 }
 
+// AntiEntropy implement the anti entropy mechanism to make nodes’ views consistent
 func (n *node) AntiEntropy() error {
 	// TODO: remove this line (just for gui testing)
 	n.conf.AntiEntropyInterval = time.Duration(10000000000)
@@ -300,25 +337,59 @@ func (n *node) AntiEntropy() error {
 		default:
 		}
 		time.Sleep(n.conf.AntiEntropyInterval)
-		err := n.SendView()
+		err := n.SendView([]string{}, "")
 		if err != nil {
 			return err
 		}
 	}
 }
 
-func (n *node) SendView() error {
+// SendView send the nodes' view by a statusMessage to dest or, if dest == "", send to a random neighbor (except those given in params)
+func (n *node) SendView(except []string, dest string) error {
 	//TODO: send anything if  the view is empty (e.g. if the node not already receive any rumor)
-	err, neighbor := n.table.GetRandomNeighbors([]string{n.conf.Socket.GetAddress()})
-	if err != nil {
-		// if no neighbor was found: do nothing
-		return nil
+	neighbor := dest
+	var err error
+	if neighbor == "" {
+		// Pick a random neighbor which is not in except
+		allowsNeighbors := append([]string{n.conf.Socket.GetAddress()}, except...)
+		err, neighbor = n.table.GetRandomNeighbors(allowsNeighbors)
+		if err != nil {
+			// if no neighbor was found: do nothing
+			return nil
+		}
 	}
 	statusMsg := types.StatusMessage(n.rumors.GetView())
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(&statusMsg)
 	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
 	pkt := transport.Packet{Header: &header, Msg: &transMsg}
 	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*10)
+}
+
+// sendDiffView send rumors which msg doesn't have (in order of increasing sequence number)
+func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
+	diff := CompareView(msg, n.rumors.GetView())
+	var rumorList []types.Rumor
+	for _, addr := range diff {
+		// send all rumors from addr which is not already received by
+		// TODO: verify the [msg[addr]:] (maybe its [msg[addr+1]:] or [msg[addr-1]:])
+		for _, rumor := range n.rumors.rumorsHistory[addr][msg[addr]:] {
+			rumorList = append(rumorList, rumor)
+		}
+	}
+	//TODO: sort rumorList to have in order sequence number (actually, we could have list with sequence : (1, 2, 1, 2, 3, 1) instead of (1, 1, 1, 2, 2, 3))
+	rumors := types.RumorsMessage{
+		Rumors: rumorList,
+	}
+	transMsg, err := n.conf.MessageRegistry.MarshalMessage(rumors)
+	if err != nil {
+		return err
+	}
+	hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
+	pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
+	if err != nil {
+		return err
+	}
+	return n.conf.Socket.Send(dest, pkToRelay, time.Millisecond*10)
 }
 
 // ConcurrentRouteTable define a safe way to access the RoutingTable.
@@ -450,6 +521,17 @@ func (pr *RumorsManager) GetView() map[string]uint {
 		mapCopy[k] = uint(len(v))
 	}
 	return mapCopy
+}
+
+// CompareView returns a list of addresses where 'me' has not received the latest rumor that 'other' has
+func CompareView(me map[string]uint, other map[string]uint) []string {
+	var diff []string
+	for addr := range other {
+		if me[addr] < other[addr] {
+			diff = append(diff, addr)
+		}
+	}
+	return diff
 }
 
 // IncSeq increment the sequence number (after sending a broadcast message)

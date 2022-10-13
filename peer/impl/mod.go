@@ -81,7 +81,7 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 		if err != nil {
 			return err
 		}
-		n.rumors.process(rumor.Origin, rumor)
+		n.rumors.Process(rumor.Origin, rumor)
 	}
 
 	// Send the RumorsMessage to another random neighbor if at least on rumor is expected
@@ -123,12 +123,19 @@ func (n *node) Start() error {
 	// create a new context which allows goroutine to know if Stop() is call
 	n.ctx, n.cancel = context.WithCancel(context.Background())
 	channelError := make(chan error, 1)
-	// we signal when the goroutine starts and when it ends
-	n.wg.Add(1)
 	// add handler associated to all known message types
 	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.RumorsMessage{}, n.ExecRumorsMessage)
 
+	// we signal when the goroutine starts and when it ends
+	n.wg.Add(1)
+	go func(c chan error) {
+		defer n.wg.Done()
+		//start anti-entropy system
+		c <- n.AntiEntropy()
+	}(channelError)
+
+	n.wg.Add(1)
 	go func(c chan error, ctx context.Context) {
 		defer n.wg.Done()
 		for {
@@ -216,7 +223,7 @@ func (n *node) Broadcast(msg transport.Message) error {
 	// create RumorsMessage containing one Rumor (embeds msg)
 	rumor := types.Rumor{
 		Origin:   n.conf.Socket.GetAddress(),
-		Sequence: n.rumors.getSeq(),
+		Sequence: n.rumors.GetSeq(),
 		Msg:      &msg,
 	}
 	rumors := types.RumorsMessage{
@@ -224,7 +231,7 @@ func (n *node) Broadcast(msg transport.Message) error {
 			rumor,
 		},
 	}
-	n.rumors.incSeq()
+	n.rumors.IncSeq()
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(rumors)
 	if err != nil {
 		return err
@@ -248,7 +255,7 @@ func (n *node) Broadcast(msg transport.Message) error {
 	if err != nil {
 		return err
 	}
-	n.rumors.process(n.conf.Socket.GetAddress(), rumor)
+	n.rumors.Process(n.conf.Socket.GetAddress(), rumor)
 
 	//TODO: wait the Ack Msg
 	return err
@@ -276,6 +283,42 @@ func (n *node) SetRoutingEntry(origin, relayAddr string) {
 	} else {
 		n.table.SetEntry(origin, relayAddr)
 	}
+}
+
+func (n *node) AntiEntropy() error {
+	// TODO: remove this line (just for gui testing)
+	n.conf.AntiEntropyInterval = time.Duration(10000000000)
+	if n.conf.AntiEntropyInterval == 0 {
+		// if interval of 0 is given then the anti-entropy mechanism must not be activated
+		return nil
+	}
+	for {
+		// check if Stop was called (and stop goroutine if so)
+		select {
+		case <-n.ctx.Done():
+			return nil
+		default:
+		}
+		time.Sleep(n.conf.AntiEntropyInterval)
+		err := n.SendView()
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func (n *node) SendView() error {
+	//TODO: send anything if  the view is empty (e.g. if the node not already receive any rumor)
+	err, neighbor := n.table.GetRandomNeighbors([]string{n.conf.Socket.GetAddress()})
+	if err != nil {
+		// if no neighbor was found: do nothing
+		return nil
+	}
+	statusMsg := types.StatusMessage(n.rumors.GetView())
+	transMsg, err := n.conf.MessageRegistry.MarshalMessage(&statusMsg)
+	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
+	pkt := transport.Packet{Header: &header, Msg: &transMsg}
+	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*10)
 }
 
 // ConcurrentRouteTable define a safe way to access the RoutingTable.
@@ -391,15 +434,15 @@ func (pr *RumorsManager) IsExpected(addr string, sequence int) bool {
 	return len((*pr).rumorsHistory[addr])+1 == sequence
 }
 
-// IsExpected return if a rumors is expected by a node
-func (pr *RumorsManager) process(addr string, r types.Rumor) {
+// Process add un rumor in its history  to signal the rumor  is processed
+func (pr *RumorsManager) Process(addr string, r types.Rumor) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 	(*pr).rumorsHistory[addr] = append((*pr).rumorsHistory[addr], r)
 }
 
-// getView return a view (all the rumors the node has processed so far)
-func (pr *RumorsManager) getView() map[string]uint {
+// GetView return a view (all the rumors the node has processed so far)
+func (pr *RumorsManager) GetView() map[string]uint {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
 	mapCopy := make(map[string]uint)
@@ -409,12 +452,12 @@ func (pr *RumorsManager) getView() map[string]uint {
 	return mapCopy
 }
 
-// incSeq increment the sequence number (after sending a broadcast message)
-func (pr *RumorsManager) incSeq() {
+// IncSeq increment the sequence number (after sending a broadcast message)
+func (pr *RumorsManager) IncSeq() {
 	(*pr).sequence++
 }
 
-// getSeq return the sequence number of the last broadcast made by this node
-func (pr *RumorsManager) getSeq() uint {
+// GetSeq return the sequence number of the last broadcast made by this node
+func (pr *RumorsManager) GetSeq() uint {
 	return uint((*pr).sequence)
 }

@@ -10,6 +10,7 @@ import (
 	"golang.org/x/xerrors"
 	"io"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 )
@@ -69,7 +70,6 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 	}
 
 	// Send back an AckMessage to the source
-	// TODO: fill the status message
 	statusMsg := types.StatusMessage(n.rumors.GetView())
 	ack := types.AckMessage{
 		AckedPacketID: pkt.Header.PacketID,
@@ -113,7 +113,7 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 
 	if equalMap(*statusMsg, n.rumors.GetView()) {
 		// if Both peers have the same view.
-		// then ContinueMongering with probability 'n.conf.ContinueMongering'
+		// then ContinueMongering with probability "n.conf.ContinueMongering"
 		if rand.Float64() < n.conf.ContinueMongering || n.conf.ContinueMongering == 1 {
 			return n.SendView([]string{pkt.Header.Source}, "")
 		}
@@ -409,8 +409,6 @@ func (n *node) SetRoutingEntry(origin, relayAddr string) {
 
 // AntiEntropy implement the anti entropy mechanism to make nodes’ views consistent
 func (n *node) AntiEntropy() error {
-	// TODO: remove this line (just for gui testing)
-	// n.conf.AntiEntropyInterval = time.Duration(10000000000)
 	if n.conf.AntiEntropyInterval == 0 {
 		// if interval of 0 is given then the anti-entropy mechanism must not be activated
 		return nil
@@ -433,7 +431,6 @@ func (n *node) AntiEntropy() error {
 // SendView send the nodes' view by a statusMessage to dest or
 // if dest == "", send to a random neighbor (except those given in params)
 func (n *node) SendView(except []string, dest string) error {
-	//TODO: send anything if  the view is empty (e.g. if the node not already receive any rumor)
 	neighbor := dest
 	var ok bool
 	if neighbor == "" {
@@ -461,10 +458,12 @@ func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
 	var rumorList []types.Rumor
 	for _, addr := range diff {
 		// send all rumors from addr which is not already received by
-		// TODO: verify the [msg[addr]:] (maybe its [msg[addr+1]:] or [msg[addr-1]:])
 		rumorList = append(rumorList, n.rumors.GetRumorsFrom(addr)[msg[addr]:]...)
 	}
-	//TODO: sort rumorList to have in order sequence number (actually, we could have list with sequence : (1, 2, 1, 2, 3, 1) instead of (1, 1, 1, 2, 2, 3))
+	// Sort rumorList by ascending sequence number
+	sort.Slice(rumorList, func(i, j int) bool {
+		return rumorList[i].Sequence < rumorList[j].Sequence
+	})
 	rumors := types.RumorsMessage{
 		Rumors: rumorList,
 	}
@@ -626,7 +625,7 @@ func (pr *RumorsManager) GetView() map[string]uint {
 	return mapCopy
 }
 
-// GetRumorsFrom return the list of remors received from src
+// GetRumorsFrom return the list of rumors received from src
 func (pr *RumorsManager) GetRumorsFrom(src string) []types.Rumor {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()

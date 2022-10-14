@@ -87,8 +87,8 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 
 	// Send the RumorsMessage to another random neighbor if at least on rumor is expected
 	if !noExpected {
-		err, rdmNeighbor := n.table.GetRandomNeighbors([]string{n.conf.Socket.GetAddress(), pkt.Header.Source})
-		if err != nil {
+		ok, rdmNeighbor := n.table.GetRandomNeighbors([]string{n.conf.Socket.GetAddress(), pkt.Header.Source})
+		if !ok {
 			// if no other neighbors, do nothing
 			return nil
 		}
@@ -317,18 +317,15 @@ func (n *node) Broadcast(msg transport.Message) error {
 			default:
 			}
 			// pick a random neighbor
-			err, neighbor := n.table.GetRandomNeighbors([]string{neighborAlreadyTry, n.conf.Socket.GetAddress()})
-			if err != nil {
-				return err
+			ok, neighbor := n.table.GetRandomNeighbors([]string{neighborAlreadyTry, n.conf.Socket.GetAddress()})
+			if !ok {
+				return xerrors.Errorf("No neighbor found", err)
 			}
 			if neighborAlreadyTry == "" { // only if the broadcast is sent for the first time
 				n.rumors.IncSeq()
 			}
 			hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
 			pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
-			if err != nil {
-				return err
-			}
 			//send RumorsMessage to a random neighbor
 			n.waitAck.requestAck(pkToRelay.Header.PacketID)
 			err = n.conf.Socket.Send(neighbor, pkToRelay, time.Millisecond*10)
@@ -411,18 +408,21 @@ func (n *node) AntiEntropy() error {
 func (n *node) SendView(except []string, dest string) error {
 	//TODO: send anything if  the view is empty (e.g. if the node not already receive any rumor)
 	neighbor := dest
-	var err error
+	var ok bool
 	if neighbor == "" {
 		// Pick a random neighbor which is not in except
 		allowsNeighbors := append([]string{n.conf.Socket.GetAddress()}, except...)
-		err, neighbor = n.table.GetRandomNeighbors(allowsNeighbors)
-		if err != nil {
+		ok, neighbor = n.table.GetRandomNeighbors(allowsNeighbors)
+		if !ok {
 			// if no neighbor was found: do nothing
 			return nil
 		}
 	}
 	statusMsg := types.StatusMessage(n.rumors.GetView())
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(&statusMsg)
+	if err != nil {
+		return err
+	}
 	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
 	pkt := transport.Packet{Header: &header, Msg: &transMsg}
 	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*10)
@@ -435,9 +435,7 @@ func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
 	for _, addr := range diff {
 		// send all rumors from addr which is not already received by
 		// TODO: verify the [msg[addr]:] (maybe its [msg[addr+1]:] or [msg[addr-1]:])
-		for _, rumor := range n.rumors.GetRumorsFrom(addr)[msg[addr]:] {
-			rumorList = append(rumorList, rumor)
-		}
+		rumorList = append(rumorList, n.rumors.GetRumorsFrom(addr)[msg[addr]:]...)
 	}
 	//TODO: sort rumorList to have in order sequence number (actually, we could have list with sequence : (1, 2, 1, 2, 3, 1) instead of (1, 1, 1, 2, 2, 3))
 	rumors := types.RumorsMessage{
@@ -449,9 +447,6 @@ func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
 	}
 	hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
 	pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
-	if err != nil {
-		return err
-	}
 	n.waitAck.requestAck(pkToRelay.Header.PacketID)
 	return n.conf.Socket.Send(dest, pkToRelay, time.Millisecond*10)
 }
@@ -536,7 +531,7 @@ func (sr *ConcurrentRouteTable) GetNeighbors() []string {
 }
 
 // GetRandomNeighbors return a random neighbor of the node which is node in except Array
-func (sr *ConcurrentRouteTable) GetRandomNeighbors(except []string) (error, string) {
+func (sr *ConcurrentRouteTable) GetRandomNeighbors(except []string) (bool, string) {
 	allNeighbors := (*sr).GetNeighbors()
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
@@ -553,10 +548,10 @@ func (sr *ConcurrentRouteTable) GetRandomNeighbors(except []string) (error, stri
 		}
 	}
 	if len(neighborsExcept) == 0 {
-		return xerrors.Errorf("no random neighbors found"), ""
+		return false, ""
 	}
 	rdmNeighbor := neighborsExcept[rand.Int()%len(neighborsExcept)]
-	return nil, rdmNeighbor
+	return true, rdmNeighbor
 }
 
 type RumorsManager struct {
@@ -648,23 +643,23 @@ func (an *AckNotification) Init() {
 }
 
 // waitAck return a channel which is closed when ack has been received
-func (an *AckNotification) requestAck(pckId string) {
+func (an *AckNotification) requestAck(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()
-	an.notif[pckId] = make(chan bool)
+	an.notif[pckID] = make(chan bool)
 }
 
 // waitAck return a channel which is closed when ack has been received
-func (an *AckNotification) waitAck(pckId string) chan bool {
+func (an *AckNotification) waitAck(pckID string) chan bool {
 	an.mu.Lock()
 	defer an.mu.Unlock()
-	channel := an.notif[pckId]
+	channel := an.notif[pckID]
 	return channel
 }
 
 // signalAck
-func (an *AckNotification) signalAck(pckId string) {
+func (an *AckNotification) signalAck(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()
-	close(an.notif[pckId])
+	close(an.notif[pckID])
 }

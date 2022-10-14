@@ -1,6 +1,7 @@
 export GLOG = warn
 export BINLOG = warn
 export HTTPLOG = warn
+export GORACE = halt_on_error=1
 
 test: test_hw0 test_hw1 test_hw2 test_hw3
 

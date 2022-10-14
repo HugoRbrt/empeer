@@ -157,6 +157,23 @@ func (n *node) ExecAckMessage(msg types.Message, pkt transport.Packet) error {
 	return n.conf.MessageRegistry.ProcessPacket(packet)
 }
 
+func (n *node) ExecPrivateMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	privMsg, ok := msg.(*types.PrivateMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	// Process only if the peer’s socket address is in the list of recipients
+	if _, b := privMsg.Recipients[n.conf.Socket.GetAddress()]; b {
+		packet := transport.Packet{
+			Header: pkt.Header,
+			Msg:    privMsg.Msg,
+		}
+		return n.conf.MessageRegistry.ProcessPacket(packet)
+	}
+	return nil
+}
+
 // node implements a peer to build a Peerster system
 //
 // - implements peer.Peer
@@ -187,6 +204,7 @@ func (n *node) Start() error {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.RumorsMessage{}, n.ExecRumorsMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.StatusMessage{}, n.ExecStatusMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.AckMessage{}, n.ExecAckMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.PrivateMessage{}, n.ExecPrivateMessage)
 
 	// we signal when the goroutine starts and when it ends
 	n.wg.Add(1)
@@ -319,7 +337,7 @@ func (n *node) Broadcast(msg transport.Message) error {
 			// pick a random neighbor
 			ok, neighbor := n.table.GetRandomNeighbors([]string{neighborAlreadyTry, n.conf.Socket.GetAddress()})
 			if !ok {
-				return xerrors.Errorf("No neighbor found", err)
+				return xerrors.Errorf("No neighbor found")
 			}
 			if neighborAlreadyTry == "" { // only if the broadcast is sent for the first time
 				n.rumors.IncSeq()
@@ -404,7 +422,8 @@ func (n *node) AntiEntropy() error {
 	}
 }
 
-// SendView send the nodes' view by a statusMessage to dest or, if dest == "", send to a random neighbor (except those given in params)
+// SendView send the nodes' view by a statusMessage to dest or
+// if dest == "", send to a random neighbor (except those given in params)
 func (n *node) SendView(except []string, dest string) error {
 	//TODO: send anything if  the view is empty (e.g. if the node not already receive any rumor)
 	neighbor := dest

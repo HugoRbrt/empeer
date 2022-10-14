@@ -10,7 +10,6 @@ import (
 	"golang.org/x/xerrors"
 	"io"
 	"math/rand"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -53,7 +52,6 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 	for _, rumor := range rumorsMsg.Rumors {
 		// we ignore not expected rumors
 		if !n.rumors.IsExpected(rumor.Origin, int(rumor.Sequence)) {
-			log.Info().Msg("broadcast NOT EXPECTED, origin:" + strconv.FormatInt(int64(len(n.rumors.rumorsHistory[rumor.Origin])+1), 10) + "seq:" + strconv.FormatUint(uint64(rumor.Sequence), 10))
 			continue
 		}
 		noExpected = false
@@ -66,12 +64,11 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 		if err != nil {
 			return err
 		}
-		n.rumors.Process(rumor.Origin, rumor)
+		n.rumors.Process(rumor.Origin, rumor, &n.table, pkt.Header.RelayedBy)
 	}
 
 	// Send back an AckMessage to the source
 	// TODO: fill the status message
-	log.Info().Msg("sending ack" + strconv.FormatUint(uint64(n.rumors.GetView()["127.0.0.1"]), 10))
 	statusMsg := types.StatusMessage(n.rumors.GetView())
 	ack := types.AckMessage{
 		AckedPacketID: pkt.Header.PacketID,
@@ -87,13 +84,13 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 	if err != nil {
 		return err
 	}
-	log.Info().Msg("sending Ack... " + n.conf.Socket.GetAddress() + "to " + pkt.Header.Source)
 
 	// Send the RumorsMessage to another random neighbor if at least on rumor is expected
 	if !noExpected {
-		err, rdmNeighbor := n.table.GetRandomNeighbors([]string{n.conf.Socket.GetAddress()})
+		err, rdmNeighbor := n.table.GetRandomNeighbors([]string{n.conf.Socket.GetAddress(), pkt.Header.Source})
 		if err != nil {
-			return err
+			// if no other neighbors, do nothing
+			return nil
 		}
 		headerRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), rdmNeighbor, 0)
 		pktRelay := transport.Packet{
@@ -114,7 +111,6 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 	}
 
 	if equalMap(*statusMsg, n.rumors.GetView()) {
-		log.Info().Msg("same view")
 		// if Both peers have the same view.
 		// then ContinueMongering with probability 'n.conf.ContinueMongering'
 		if rand.Float64() < n.conf.ContinueMongering || n.conf.ContinueMongering == 1 {
@@ -122,7 +118,6 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 		}
 		return nil
 	}
-	log.Info().Msg("not same view")
 	iDontHave := CompareView(n.rumors.GetView(), *statusMsg)
 	if len(iDontHave) > 0 {
 		// has Rumors that the remote peer doesn't have.
@@ -136,8 +131,6 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 	if len(itDoesntHave) > 0 {
 		// remote peer has Rumors that the peer doesn't have
 		// then sent rumors that remote peer doesn't have (in order of increasing sequence number)
-		log.Info().Msg("not same view" + n.conf.Socket.GetAddress() + " > " + pkt.Header.Source)
-		log.Info().Msg(itDoesntHave[0])
 		return n.sendDiffView(*statusMsg, pkt.Header.Source)
 	}
 	return nil
@@ -150,10 +143,8 @@ func (n *node) ExecAckMessage(msg types.Message, pkt transport.Packet) error {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 
-	log.Info().Msg("received Ack..." + n.conf.Socket.GetAddress() + " id:" + ackMsg.AckedPacketID)
 	// stops the timer
 	n.waitAck.signalAck(ackMsg.AckedPacketID)
-	log.Info().Msg("ack content: " + ackMsg.String())
 	// process embeds message
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(ackMsg.Status)
 	if err != nil {
@@ -202,7 +193,10 @@ func (n *node) Start() error {
 	go func(c chan error) {
 		defer n.wg.Done()
 		//start anti-entropy system
-		c <- n.AntiEntropy()
+		err := n.AntiEntropy()
+		if err != nil {
+			c <- err
+		}
 	}(channelError)
 
 	n.wg.Add(1)
@@ -224,22 +218,23 @@ func (n *node) Start() error {
 			n.wg.Add(1)
 			go func(c chan error) {
 				defer n.wg.Done()
-				log.Info().Msg("run...")
 				err := n.ProcessMessage(pkt)
 				if err != nil {
 					c <- err
 				}
-				log.Info().Msg("end")
 			}(channelError)
 		}
 	}(channelError, n.ctx)
 	//catch possible errors
-	select {
-	case returnError := <-channelError:
-		return returnError
-	case <-n.ctx.Done():
-		return nil
-	}
+	go func() {
+		select {
+		case returnError := <-channelError:
+			log.Error().Msg(returnError.Error())
+		case <-n.ctx.Done():
+			return
+		}
+	}()
+	return nil
 }
 
 // ProcessMessage permit to process a message (relay, register...)
@@ -309,7 +304,7 @@ func (n *node) Broadcast(msg transport.Message) error {
 	if err != nil {
 		return err
 	}
-	n.rumors.Process(n.conf.Socket.GetAddress(), rumor)
+	n.rumors.Process(n.conf.Socket.GetAddress(), rumor, &n.table, "")
 
 	n.wg.Add(1)
 	neighborAlreadyTry := ""
@@ -336,8 +331,6 @@ func (n *node) Broadcast(msg transport.Message) error {
 			}
 			//send RumorsMessage to a random neighbor
 			n.waitAck.requestAck(pkToRelay.Header.PacketID)
-			log.Info().Msg("chanel made")
-			log.Info().Msg("broadcast to:" + neighbor)
 			err = n.conf.Socket.Send(neighbor, pkToRelay, time.Millisecond*10)
 			if err != nil {
 				return err
@@ -349,7 +342,6 @@ func (n *node) Broadcast(msg transport.Message) error {
 				case <-n.ctx.Done():
 					return nil
 				case <-n.waitAck.waitAck(pkToRelay.Header.PacketID):
-					log.Info().Msg("chanel finished")
 					return nil
 				}
 			}
@@ -358,10 +350,8 @@ func (n *node) Broadcast(msg transport.Message) error {
 			case <-n.ctx.Done():
 				return nil
 			case <-n.waitAck.waitAck(pkToRelay.Header.PacketID): // if ack was received
-				log.Info().Msg("chanel finished")
 				return nil
 			case <-time.After(n.conf.AckTimeout): // resend the message to another neighbor
-				log.Info().Msg("resend broadcast, no ack received from: " + neighbor + "  id:" + pkToRelay.Header.PacketID)
 				neighborAlreadyTry = neighbor
 				continue
 			}
@@ -440,13 +430,12 @@ func (n *node) SendView(except []string, dest string) error {
 
 // sendDiffView send rumors which msg doesn't have (in order of increasing sequence number)
 func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
-	log.Info().Msg(msg.String())
 	diff := CompareView(msg, n.rumors.GetView())
 	var rumorList []types.Rumor
 	for _, addr := range diff {
 		// send all rumors from addr which is not already received by
 		// TODO: verify the [msg[addr]:] (maybe its [msg[addr+1]:] or [msg[addr-1]:])
-		for _, rumor := range n.rumors.rumorsHistory[addr][msg[addr]:] {
+		for _, rumor := range n.rumors.GetRumorsFrom(addr)[msg[addr]:] {
 			rumorList = append(rumorList, rumor)
 		}
 	}
@@ -454,7 +443,6 @@ func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
 	rumors := types.RumorsMessage{
 		Rumors: rumorList,
 	}
-	log.Info().Msg(rumorList[0].String())
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(rumors)
 	if err != nil {
 		return err
@@ -465,7 +453,6 @@ func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
 		return err
 	}
 	n.waitAck.requestAck(pkToRelay.Header.PacketID)
-	log.Info().Msg("chanel made")
 	return n.conf.Socket.Send(dest, pkToRelay, time.Millisecond*10)
 }
 
@@ -569,7 +556,6 @@ func (sr *ConcurrentRouteTable) GetRandomNeighbors(except []string) (error, stri
 		return xerrors.Errorf("no random neighbors found"), ""
 	}
 	rdmNeighbor := neighborsExcept[rand.Int()%len(neighborsExcept)]
-	log.Info().Msg("neighbor found:" + rdmNeighbor)
 	return nil, rdmNeighbor
 }
 
@@ -597,10 +583,14 @@ func (pr *RumorsManager) IsExpected(addr string, sequence int) bool {
 }
 
 // Process add un rumor in its history  to signal the rumor  is processed
-func (pr *RumorsManager) Process(addr string, r types.Rumor) {
+func (pr *RumorsManager) Process(addr string, r types.Rumor, sr *ConcurrentRouteTable, relayBy string) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 	(*pr).rumorsHistory[addr] = append((*pr).rumorsHistory[addr], r)
+	// update routing table
+	if relayBy != "" {
+		sr.SetEntry(addr, relayBy)
+	}
 }
 
 // GetView return a view (all the rumors the node has processed so far)
@@ -612,6 +602,14 @@ func (pr *RumorsManager) GetView() map[string]uint {
 		mapCopy[k] = uint(len(v))
 	}
 	return mapCopy
+}
+
+// GetRumorsFrom return the list of remors received from src
+func (pr *RumorsManager) GetRumorsFrom(src string) []types.Rumor {
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+	arr := (*pr).rumorsHistory[src]
+	return arr
 }
 
 // CompareView returns a list of addresses where 'me' has not received the latest rumor that 'other' has

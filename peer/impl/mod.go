@@ -21,6 +21,7 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node := node{conf: conf}
 	// Initializing the routing table
 	node.table = ConcurrentRouteTable{R: make(map[string]string)}
+	node.channelError = make(chan error, 1)
 	node.rumors.Init()
 	node.waitAck.Init()
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
@@ -192,13 +193,14 @@ type node struct {
 	rumors RumorsManager
 	// chanel list that ackMessage uses to notify that corresponding packetID ack has been received
 	waitAck AckNotification
+	// permit to catch errors
+	channelError chan error
 }
 
 // Start implements peer.Service
 func (n *node) Start() error {
 	// create a new context which allows goroutine to know if Stop() is call
 	n.ctx, n.cancel = context.WithCancel(context.Background())
-	channelError := make(chan error, 1)
 	// add handler associated to all known message types
 	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.RumorsMessage{}, n.ExecRumorsMessage)
@@ -215,7 +217,7 @@ func (n *node) Start() error {
 		if err != nil {
 			c <- err
 		}
-	}(channelError)
+	}(n.channelError)
 
 	n.wg.Add(1)
 	go func(c chan error, ctx context.Context) {
@@ -240,13 +242,13 @@ func (n *node) Start() error {
 				if err != nil {
 					c <- err
 				}
-			}(channelError)
+			}(n.channelError)
 		}
-	}(channelError, n.ctx)
+	}(n.channelError, n.ctx)
 	//catch possible errors
 	go func() {
 		select {
-		case returnError := <-channelError:
+		case returnError := <-n.channelError:
 			log.Error().Msg(returnError.Error())
 		case <-n.ctx.Done():
 			return
@@ -326,53 +328,59 @@ func (n *node) Broadcast(msg transport.Message) error {
 
 	n.wg.Add(1)
 	neighborAlreadyTry := ""
-	go func() error {
+	go func() {
 		defer n.wg.Done()
-		for {
-			select {
-			case <-n.ctx.Done():
-				return nil
-			default:
-			}
-			// pick a random neighbor
-			ok, neighbor := n.table.GetRandomNeighbors([]string{neighborAlreadyTry, n.conf.Socket.GetAddress()})
-			if !ok {
-				return xerrors.Errorf("No neighbor found")
-			}
-			if neighborAlreadyTry == "" { // only if the broadcast is sent for the first time
-				n.rumors.IncSeq()
-			}
-			hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
-			pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
-			//send RumorsMessage to a random neighbor
-			n.waitAck.requestAck(pkToRelay.Header.PacketID)
-			err = n.conf.Socket.Send(neighbor, pkToRelay, time.Millisecond*10)
-			if err != nil {
-				return err
-			}
-			// wait the Ack Msg
-			// if timeout set to 0: wait forever
-			if n.conf.AckTimeout == 0 {
-				select {
-				case <-n.ctx.Done():
-					return nil
-				case <-n.waitAck.waitAck(pkToRelay.Header.PacketID):
-					return nil
-				}
-			}
-
-			select {
-			case <-n.ctx.Done():
-				return nil
-			case <-n.waitAck.waitAck(pkToRelay.Header.PacketID): // if ack was received
-				return nil
-			case <-time.After(n.conf.AckTimeout): // resend the message to another neighbor
-				neighborAlreadyTry = neighbor
-				continue
-			}
-		}
+		n.TryBroadcast(neighborAlreadyTry, transMsg)
 	}()
 	return err
+}
+
+// TryBroadcast send a rumors to a random neighbor until someone receive it (for Broadcast function)
+func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Message) {
+	for {
+		select {
+		case <-n.ctx.Done():
+			return
+		default:
+		}
+		// pick a random neighbor
+		ok, neighbor := n.table.GetRandomNeighbors([]string{neighborAlreadyTry, n.conf.Socket.GetAddress()})
+		if !ok {
+			n.channelError <- xerrors.Errorf("No neighbor found")
+			return
+		}
+		if neighborAlreadyTry == "" { // only if the broadcast is sent for the first time
+			n.rumors.IncSeq()
+		}
+		hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
+		pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
+		//send RumorsMessage to a random neighbor
+		n.waitAck.requestAck(pkToRelay.Header.PacketID)
+		err := n.conf.Socket.Send(neighbor, pkToRelay, time.Millisecond*10)
+		if err != nil {
+			n.channelError <- err
+			return
+		}
+		// wait the Ack Msg
+		// if timeout set to 0: wait forever
+		if n.conf.AckTimeout == 0 {
+			select {
+			case <-n.ctx.Done():
+				return
+			case <-n.waitAck.waitAck(pkToRelay.Header.PacketID):
+				return
+			}
+		}
+		select {
+		case <-n.ctx.Done():
+			return
+		case <-n.waitAck.waitAck(pkToRelay.Header.PacketID): // if ack was received
+			return
+		case <-time.After(n.conf.AckTimeout): // resend the message to another neighbor
+			neighborAlreadyTry = neighbor
+			continue
+		}
+	}
 }
 
 // AddPeer implements peer.Service

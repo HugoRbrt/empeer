@@ -42,6 +42,17 @@ func (n *node) ExecChatMessage(msg types.Message, pkt transport.Packet) error {
 	return nil
 }
 
+func (n *node) ExecEmptyMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	_, ok := msg.(*types.EmptyMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	_ = pkt
+
+	return nil
+}
+
 func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error {
 	// cast the message to its actual type. You assume it is the right type.
 	rumorsMsg, ok := msg.(*types.RumorsMessage)
@@ -81,7 +92,7 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 	if err != nil {
 		return err
 	}
-	err = n.conf.Socket.Send(pkt.Header.Source, ackPacket, time.Millisecond*10)
+	err = n.conf.Socket.Send(pkt.Header.Source, ackPacket, time.Millisecond*1)
 	if err != nil {
 		return err
 	}
@@ -99,7 +110,7 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 			Msg:    pkt.Msg,
 		}
 		n.waitAck.requestAck(pktRelay.Header.PacketID)
-		return n.conf.Socket.Send(rdmNeighbor, pktRelay, time.Millisecond*10)
+		return n.conf.Socket.Send(rdmNeighbor, pktRelay, time.Millisecond*1)
 	}
 	return nil
 }
@@ -123,16 +134,27 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 	if len(iDontHave) > 0 {
 		// has Rumors that the remote peer doesn't have.
 		// then send a status message to the remote peer
-		err := n.SendView([]string{}, pkt.Header.Source)
-		if err != nil {
-			return err
-		}
+		n.wg.Add(1)
+		go func(c chan error) {
+			defer n.wg.Done()
+			err := n.SendView([]string{}, pkt.Header.Source)
+			if err != nil {
+				c <- err
+			}
+		}(n.channelError)
 	}
 	itDoesntHave := CompareView(*statusMsg, n.rumors.GetView())
 	if len(itDoesntHave) > 0 {
 		// remote peer has Rumors that the peer doesn't have
 		// then sent rumors that remote peer doesn't have (in order of increasing sequence number)
-		return n.sendDiffView(*statusMsg, pkt.Header.Source)
+		n.wg.Add(1)
+		go func(c chan error) {
+			defer n.wg.Done()
+			err := n.sendDiffView(*statusMsg, pkt.Header.Source)
+			if err != nil {
+				c <- err
+			}
+		}(n.channelError)
 	}
 	return nil
 }
@@ -203,6 +225,7 @@ func (n *node) Start() error {
 	n.ctx, n.cancel = context.WithCancel(context.Background())
 	// add handler associated to all known message types
 	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.EmptyMessage{}, n.ExecEmptyMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.RumorsMessage{}, n.ExecRumorsMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.StatusMessage{}, n.ExecStatusMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.AckMessage{}, n.ExecAckMessage)
@@ -214,6 +237,15 @@ func (n *node) Start() error {
 		defer n.wg.Done()
 		//start anti-entropy system
 		err := n.AntiEntropy()
+		if err != nil {
+			c <- err
+		}
+	}(n.channelError)
+	n.wg.Add(1)
+	go func(c chan error) {
+		defer n.wg.Done()
+		//start heartbeat mechanism
+		err := n.Heartbeat()
 		if err != nil {
 			c <- err
 		}
@@ -275,7 +307,7 @@ func (n *node) ProcessMessage(pkt transport.Packet) error {
 		if !exist {
 			return xerrors.Errorf("unknown destination address")
 		}
-		return n.conf.Socket.Send(nextHop, packet, time.Millisecond*10)
+		return n.conf.Socket.Send(nextHop, packet, time.Millisecond*1)
 	}
 	return nil
 }
@@ -297,7 +329,7 @@ func (n *node) Unicast(dest string, msg transport.Message) error {
 	if !exist {
 		return xerrors.Errorf("unknown destination address")
 	}
-	return n.conf.Socket.Send(nextHop, packet, time.Millisecond*10)
+	return n.conf.Socket.Send(nextHop, packet, time.Millisecond*1)
 }
 
 // Broadcast implements peer.Messaging
@@ -330,6 +362,11 @@ func (n *node) Broadcast(msg transport.Message) error {
 	neighborAlreadyTry := ""
 	go func() {
 		defer n.wg.Done()
+		select {
+		case <-n.ctx.Done():
+			return
+		default:
+		}
 		n.TryBroadcast(neighborAlreadyTry, transMsg)
 	}()
 	return err
@@ -338,11 +375,6 @@ func (n *node) Broadcast(msg transport.Message) error {
 // TryBroadcast send a rumors to a random neighbor until someone receive it (for Broadcast function)
 func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Message) {
 	for {
-		select {
-		case <-n.ctx.Done():
-			return
-		default:
-		}
 		// pick a random neighbor
 		ok, neighbor := n.table.GetRandomNeighbors([]string{neighborAlreadyTry, n.conf.Socket.GetAddress()})
 		if !ok {
@@ -356,7 +388,7 @@ func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Messag
 		pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
 		//send RumorsMessage to a random neighbor
 		n.waitAck.requestAck(pkToRelay.Header.PacketID)
-		err := n.conf.Socket.Send(neighbor, pkToRelay, time.Millisecond*10)
+		err := n.conf.Socket.Send(neighbor, pkToRelay, time.Millisecond*1)
 		if err != nil {
 			n.channelError <- err
 			return
@@ -374,7 +406,8 @@ func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Messag
 		select {
 		case <-n.ctx.Done():
 			return
-		case <-n.waitAck.waitAck(pkToRelay.Header.PacketID): // if ack was received
+		case <-n.waitAck.waitAck(pkToRelay.Header.PacketID):
+			// if ack was received
 			return
 		case <-time.After(n.conf.AckTimeout): // resend the message to another neighbor
 			neighborAlreadyTry = neighbor
@@ -428,6 +461,31 @@ func (n *node) AntiEntropy() error {
 	}
 }
 
+// Heartbeat implement the heartbeat mechanism which makes peers announce themselves to every other peer
+func (n *node) Heartbeat() error {
+	if n.conf.HeartbeatInterval == 0 {
+		// if interval of 0 is given then the Heartbeat mechanism must not be activated
+		return nil
+	}
+	transEmptyMsg, err := n.conf.MessageRegistry.MarshalMessage(types.EmptyMessage{})
+	if err != nil {
+		return err
+	}
+	for {
+		// check if Stop was called (and stop goroutine if so)
+		select {
+		case <-n.ctx.Done():
+			return nil
+		default:
+		}
+		err = n.Broadcast(transEmptyMsg)
+		if err != nil {
+			return err
+		}
+		time.Sleep(n.conf.HeartbeatInterval)
+	}
+}
+
 // SendView send the nodes' view by a statusMessage to dest or
 // if dest == "", send to a random neighbor (except those given in params)
 func (n *node) SendView(except []string, dest string) error {
@@ -449,7 +507,7 @@ func (n *node) SendView(except []string, dest string) error {
 	}
 	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
 	pkt := transport.Packet{Header: &header, Msg: &transMsg}
-	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*10)
+	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1)
 }
 
 // sendDiffView send rumors which msg doesn't have (in order of increasing sequence number)
@@ -474,7 +532,7 @@ func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
 	hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
 	pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
 	n.waitAck.requestAck(pkToRelay.Header.PacketID)
-	return n.conf.Socket.Send(dest, pkToRelay, time.Millisecond*10)
+	return n.conf.Socket.Send(dest, pkToRelay, time.Millisecond*1)
 }
 
 func equalMap(m1 types.StatusMessage, m2 types.StatusMessage) bool {
@@ -598,8 +656,8 @@ func (pr *RumorsManager) Init() {
 
 // IsExpected return if a rumors is expected by a node
 func (pr *RumorsManager) IsExpected(addr string, sequence int) bool {
-	pr.mu.RLock()
-	defer pr.mu.RUnlock()
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
 	return len((*pr).rumorsHistory[addr])+1 == sequence
 }
 
@@ -616,8 +674,8 @@ func (pr *RumorsManager) Process(addr string, r types.Rumor, sr *ConcurrentRoute
 
 // GetView return a view (all the rumors the node has processed so far)
 func (pr *RumorsManager) GetView() map[string]uint {
-	pr.mu.RLock()
-	defer pr.mu.RUnlock()
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
 	mapCopy := make(map[string]uint)
 	for k, v := range (*pr).rumorsHistory {
 		mapCopy[k] = uint(len(v))
@@ -627,8 +685,8 @@ func (pr *RumorsManager) GetView() map[string]uint {
 
 // GetRumorsFrom return the list of rumors received from src
 func (pr *RumorsManager) GetRumorsFrom(src string) []types.Rumor {
-	pr.mu.RLock()
-	defer pr.mu.RUnlock()
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
 	arr := (*pr).rumorsHistory[src]
 	return arr
 }

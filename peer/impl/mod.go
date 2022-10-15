@@ -356,8 +356,8 @@ func (n *node) Broadcast(msg transport.Message) error {
 			return
 		default:
 		}
-		err = n.TryBroadcast(neighborAlreadyTry, transMsg)
-		if err != nil {
+		err2 := n.TryBroadcast(neighborAlreadyTry, transMsg)
+		if err2 != nil {
 			log.Error().Msg("Error while trying to broadcast a message")
 		}
 	}()

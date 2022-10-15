@@ -695,11 +695,15 @@ func CompareView(me map[string]uint, other map[string]uint) []string {
 
 // IncSeq increment the sequence number (after sending a broadcast message)
 func (pr *RumorsManager) IncSeq() {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
 	(*pr).sequence++
 }
 
 // GetSeq return the sequence number of the last broadcast made by this node
 func (pr *RumorsManager) GetSeq() uint {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
 	return uint((*pr).sequence)
 }
 

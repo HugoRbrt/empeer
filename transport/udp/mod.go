@@ -2,7 +2,7 @@ package udp
 
 import (
 	"errors"
-	"math"
+	"github.com/rs/zerolog/log"
 	"net"
 	"os"
 	"sync"
@@ -62,30 +62,37 @@ func (s *Socket) Close() error {
 // Send implements transport.Socket
 func (s *Socket) Send(dest string, pkt transport.Packet, timeout time.Duration) error {
 
-	udpAdr, err := net.ResolveUDPAddr("udp4", dest)
+	conn, err := net.Dial("udp4", dest)
 	if err != nil {
 		return err
 	}
-	conn, err := net.DialUDP("udp4", nil, udpAdr)
-	if err != nil {
-		return err
-	}
-
-	if timeout <= 0 {
-		timeout = math.MaxInt64
-	}
-	err = conn.SetWriteDeadline(time.Now().Add(timeout))
-	if err != nil {
-		return err
-	}
+	defer func(conn net.Conn) {
+		err := conn.Close()
+		if err != nil {
+			log.Info().Msg("error at closing of conn")
+		}
+	}(conn)
 
 	data, err := pkt.Marshal()
 	if err != nil {
 		return err
 	}
 
+	if timeout > 0 {
+		err = conn.SetWriteDeadline(time.Now().Add(timeout))
+		if err != nil {
+			log.Info().Msg("Send Error or timeOut")
+			return err
+		}
+	}
+
 	_, errSd := conn.Write(data)
 	if errSd != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			log.Info().Msg("Send TimeOut")
+			return transport.TimeoutError(0)
+		}
+		log.Info().Msg("Send Error")
 		return errSd
 	}
 

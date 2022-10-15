@@ -20,13 +20,15 @@ import (
 func NewPeer(conf peer.Configuration) peer.Peer {
 	// save the configuration of the node
 	node := node{conf: conf}
-	// Initializing the routing table
+	// initialize node's objects
 	node.table = ConcurrentRouteTable{R: make(map[string]string)}
 	node.rumors.Init()
 	node.waitAck.Init()
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
 	return &node
 }
+
+// Handler for each types of message
 
 func (n *node) ExecChatMessage(msg types.Message, pkt transport.Packet) error {
 	// cast the message to its actual type. You assume it is the right type.
@@ -53,11 +55,11 @@ func (n *node) ExecEmptyMessage(msg types.Message, pkt transport.Packet) error {
 }
 
 func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error {
-	n.mu.Lock()
+	n.rumorMu.Lock()
 	// cast the message to its actual type. You assume it is the right type.
 	rumorsMsg, ok := msg.(*types.RumorsMessage)
 	if !ok {
-		n.mu.Unlock()
+		n.rumorMu.Unlock()
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 
@@ -76,7 +78,7 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 		}
 		err := n.conf.MessageRegistry.ProcessPacket(packet)
 		if err != nil {
-			n.mu.Unlock()
+			n.rumorMu.Unlock()
 			return err
 		}
 		n.rumors.Process(rumor.Origin, rumor, &n.table, pkt.Header.RelayedBy)
@@ -90,12 +92,12 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 	}
 	transAck, err := n.conf.MessageRegistry.MarshalMessage(&ack)
 	if err != nil {
-		n.mu.Unlock()
+		n.rumorMu.Unlock()
 		return err
 	}
 	ackHeader := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), pkt.Header.Source, 0)
 	ackPacket := transport.Packet{Header: &ackHeader, Msg: &transAck}
-	n.mu.Unlock()
+	n.rumorMu.Unlock()
 	err = n.conf.Socket.Send(pkt.Header.Source, ackPacket, time.Millisecond*1000)
 	if err != nil {
 		return err
@@ -120,15 +122,15 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 }
 
 func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error {
-	n.mu.Lock()
-	defer n.mu.Unlock()
+	n.rumorMu.Lock()
+	defer n.rumorMu.Unlock()
 	// cast the message to its actual type. You assume it is the right type.
 	statusMsg, ok := msg.(*types.StatusMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 
-	if equalMap(*statusMsg, n.rumors.GetView()) {
+	if SameStatus(*statusMsg, n.rumors.GetView()) {
 		// if Both peers have the same view.
 		// then ContinueMongering with probability "n.conf.ContinueMongering"
 		if rand.Float64() < n.conf.ContinueMongering || n.conf.ContinueMongering == 1 {
@@ -206,16 +208,16 @@ type node struct {
 	// boolean about the running state of the node
 	ctx    context.Context
 	cancel context.CancelFunc
-	//group of all goroutine launch by the node
+	// group of all goroutine launch by the node
 	wg sync.WaitGroup
-	//route table
+	// route table
 	table ConcurrentRouteTable
 	// Broadcast functionality manager:
 	rumors RumorsManager
 	// chanel list that ackMessage uses to notify that corresponding packetID ack has been received
 	waitAck AckNotification
-
-	mu sync.Mutex
+	// mutex controlling send/recv rumors msg
+	rumorMu sync.Mutex
 }
 
 // Start implements peer.Service
@@ -338,6 +340,7 @@ func (n *node) Broadcast(msg transport.Message) error {
 	if err != nil {
 		return err
 	}
+
 	// Process the message locally
 	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), 0)
 	pkt := transport.Packet{Header: &header, Msg: &msg}
@@ -347,6 +350,7 @@ func (n *node) Broadcast(msg transport.Message) error {
 	}
 	n.rumors.Process(n.conf.Socket.GetAddress(), rumor, &n.table, "")
 
+	// send a rumors to a random neighbor
 	n.wg.Add(1)
 	neighborAlreadyTry := ""
 	go func() {
@@ -526,7 +530,8 @@ func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
 	return n.conf.Socket.Send(dest, pkToRelay, time.Millisecond*1000)
 }
 
-func equalMap(m1 types.StatusMessage, m2 types.StatusMessage) bool {
+// SameStatus return m1 == m2 for StatusMessage
+func SameStatus(m1 types.StatusMessage, m2 types.StatusMessage) bool {
 	for i := range m1 {
 		if m1[i] != m2[i] {
 			return false
@@ -584,7 +589,7 @@ func (sr *ConcurrentRouteTable) Copy() peer.RoutingTable {
 	return tableCopy
 }
 
-// Get return the corresponding value and boolean corresponding to the existence of the value
+// Get return the value and boolean (if the key exist or not) corresponding to the key value in routing table
 func (sr *ConcurrentRouteTable) Get(key string) (string, bool) {
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
@@ -592,24 +597,17 @@ func (sr *ConcurrentRouteTable) Get(key string) (string, bool) {
 	return value, b
 }
 
-// GetNeighbors return the list of node's neighbors
-func (sr *ConcurrentRouteTable) GetNeighbors() []string {
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-	var b []string
-	for key, element := range sr.R {
-		if key == element {
-			b = append(b, key)
-		}
-	}
-	return b
-}
-
 // GetRandomNeighbors return a random neighbor of the node which is node in except Array
 func (sr *ConcurrentRouteTable) GetRandomNeighbors(except []string) (bool, string) {
-	allNeighbors := (*sr).GetNeighbors()
 	sr.mu.Lock()
 	defer sr.mu.Unlock()
+	var allNeighbors []string
+	for key, element := range sr.R {
+		if key == element {
+			allNeighbors = append(allNeighbors, key)
+		}
+	}
+	// remove those which are in except
 	var neighborsExcept []string
 	for _, n := range allNeighbors {
 		remove := false
@@ -622,6 +620,7 @@ func (sr *ConcurrentRouteTable) GetRandomNeighbors(except []string) (bool, strin
 			neighborsExcept = append(neighborsExcept, n)
 		}
 	}
+	// chose a random neighbors between those who remain
 	if len(neighborsExcept) == 0 {
 		return false, ""
 	}
@@ -721,7 +720,7 @@ func (an *AckNotification) Init() {
 	an.notif = make(map[string]chan bool)
 }
 
-// waitAck return a channel which is closed when ack has been received
+// waitAck request for an Ack with the ID pckID
 func (an *AckNotification) requestAck(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()
@@ -736,7 +735,7 @@ func (an *AckNotification) waitAck(pckID string) chan bool {
 	return channel
 }
 
-// signalAck
+// signalAck signal by its corresponding channel that the pckID's Ack was received
 func (an *AckNotification) signalAck(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()

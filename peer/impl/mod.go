@@ -36,7 +36,7 @@ func (n *node) ExecChatMessage(msg types.Message, pkt transport.Packet) error {
 	}
 	_ = pkt
 
-	println(chatMsg.String())
+	log.Info().Msg(chatMsg.String())
 
 	return nil
 }
@@ -271,7 +271,7 @@ func (n *node) Start() error {
 				defer n.wg.Done()
 				err := n.ProcessMessage(pkt)
 				if err != nil {
-					log.Error().Msgf("error while processing received message: *v", err.Error())
+					log.Error().Msgf("error while processing received message: %v", err.Error())
 				}
 			}()
 		}

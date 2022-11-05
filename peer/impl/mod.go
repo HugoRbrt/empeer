@@ -494,7 +494,7 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 		var chunk = make([]byte, n.conf.ChunkSize)
 		length, err := data.Read(chunk)
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			} else {
 				return "", err
@@ -507,11 +507,11 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 			return "", err
 		}
 		hashSha := hash.Sum(nil)
-		hashHex := hex.EncodeToString(hashSha[:])
+		hashHex := hex.EncodeToString(hashSha)
 		// store the chunk
 		storageSpace.Set(hashHex, chunk[:length])
 		// keep in memory Hash
-		HashShas = append(HashShas, hashSha[:]...)
+		HashShas = append(HashShas, hashSha...)
 		HashHexs = append(HashHexs, hashHex)
 	}
 	// Store MetaFile
@@ -521,7 +521,7 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 		return "", err
 	}
 	hashSha := hash.Sum(nil)
-	metahash = hex.EncodeToString(hashSha[:])
+	metahash = hex.EncodeToString(hashSha)
 	metaFileContent := []byte(strings.Join(HashHexs, peer.MetafileSep))
 	storageSpace.Set(metahash, metaFileContent)
 	return metahash, nil

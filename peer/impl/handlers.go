@@ -96,7 +96,7 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 			Header: &headerRelay,
 			Msg:    pkt.Msg,
 		}
-		n.waitAck.requestAck(pktRelay.Header.PacketID)
+		n.waitAck.requestNotif(pktRelay.Header.PacketID)
 		return n.conf.Socket.Send(rdmNeighbor, pktRelay, time.Millisecond*1000)
 	}
 	return nil
@@ -149,7 +149,8 @@ func (n *node) ExecAckMessage(msg types.Message, pkt transport.Packet) error {
 	}
 
 	// stops the timer
-	n.waitAck.signalAck(ackMsg.AckedPacketID)
+	n.waitAck.signalNotif(ackMsg.AckedPacketID)
+
 	// process embeds message
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(ackMsg.Status)
 	if err != nil {
@@ -176,5 +177,16 @@ func (n *node) ExecPrivateMessage(msg types.Message, pkt transport.Packet) error
 		}
 		return n.conf.MessageRegistry.ProcessPacket(packet)
 	}
+	return nil
+}
+
+func (n *node) ExecDataReplyMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	dataReplyMsg, ok := msg.(*types.DataReplyMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	// stops the timer and send obtained value
+	n.waitAck.sendNotif(dataReplyMsg.RequestID, dataReplyMsg.Value)
 	return nil
 }

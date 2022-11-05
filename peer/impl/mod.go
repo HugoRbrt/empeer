@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"encoding/hex"
 	"errors"
+	"github.com/rs/xid"
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/transport"
@@ -50,7 +51,7 @@ type node struct {
 	// Broadcast functionality manager:
 	rumors RumorsManager
 	// chanel list that ackMessage uses to notify that corresponding packetID ack has been received
-	waitAck AckNotification
+	waitAck Notification
 	// mutex controlling send/recv rumors msg
 	rumorMu sync.Mutex
 	// catalog defining where metahashes and chunks can be found
@@ -218,7 +219,7 @@ func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Messag
 		hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
 		pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
 		//send RumorsMessage to a random neighbor
-		n.waitAck.requestAck(pkToRelay.Header.PacketID)
+		n.waitAck.requestNotif(pkToRelay.Header.PacketID)
 		err := n.conf.Socket.Send(neighbor, pkToRelay, time.Millisecond*1000)
 		if err != nil {
 			return err
@@ -229,14 +230,14 @@ func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Messag
 			select {
 			case <-n.ctx.Done():
 				return nil
-			case <-n.waitAck.waitAck(pkToRelay.Header.PacketID):
+			case <-n.waitAck.waitNotif(pkToRelay.Header.PacketID):
 				return nil
 			}
 		}
 		select {
 		case <-n.ctx.Done():
 			return nil
-		case <-n.waitAck.waitAck(pkToRelay.Header.PacketID):
+		case <-n.waitAck.waitNotif(pkToRelay.Header.PacketID):
 			// if ack was received
 			return nil
 		case <-time.After(n.conf.AckTimeout): // resend the message to another neighbor
@@ -361,24 +362,80 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 
 // Download implement the peer.DataSharing
 func (n *node) Download(metahash string) ([]byte, error) {
+	var listDownloadedChunk []byte
 	// Get MetaFile
-	metaFile := string(n.conf.Storage.GetDataBlobStore().Get(metahash)[:])
-	// Get list of chunk's hashHex
-	chunks := strings.Split(metaFile, peer.MetafileSep)
-	// Get Chunks 1 by 1
+	metaFile, err := n.DownloadChunk(metahash)
+	if err != nil {
+		return nil, err
+	}
+	metaFileString := string(metaFile)
+	// Get chunks
+	chunks := strings.Split(metaFileString, peer.MetafileSep)
 	for _, chunk := range chunks {
 		// check if it's locally, do anything (the chunk is already uploaded)
-		if n.conf.Storage.GetDataBlobStore().Get(chunk) != nil {
-			continue
+		chunkValue, err := n.DownloadChunk(chunk)
+		if err != nil {
+			return nil, err
 		}
-		// check if it knows someone who has the chunk, if so: send DataRequestMessage (random peer, retry on it with (next hop if needed) by waiting with backoff strategy) and store it locally
-		if peerChunk := n.catalog.RandomPeer(chunk); peerChunk == "" {
-			return nil, xerrors.Errorf("no peer found for chunk %v", chunk)
-		}
-		// send DataRequestMessage
-
+		listDownloadedChunk = append(listDownloadedChunk, chunkValue...)
 	}
-	return nil, nil
+	return listDownloadedChunk, nil
+}
+
+// DownloadChunk download the name's chunk locally, return obtained value and possible error
+func (n *node) DownloadChunk(name string) ([]byte, error) {
+	// check if the chunk is already downloaded locally
+	localValue := n.conf.Storage.GetDataBlobStore().Get(name)
+	if localValue != nil {
+		return localValue, nil
+	}
+	// check if it knows someone who has the chunk
+	peerChunk := n.catalog.RandomPeer(name)
+	if peerChunk == "" {
+		return nil, xerrors.Errorf("no peer found for chunk %v", name)
+	}
+	// send DataRequestMessage to peerChunk
+	hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), peerChunk, 0)
+	nextHop, exist := n.table.Get(peerChunk)
+	if !exist {
+		return nil, xerrors.Errorf("unknown destination address")
+	}
+	waitingTime := n.conf.BackoffDataRequest.Initial
+	var nbRetry uint = 0
+	for {
+		// prepare message
+		msg := types.DataRequestMessage{RequestID: xid.New().String(), Key: name}
+		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+		if err != nil {
+			return nil, err
+		}
+		pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
+		n.waitAck.requestNotif(msg.RequestID)
+		// send msg
+		err = n.conf.Socket.Send(nextHop, pkt, time.Millisecond*1000)
+		if err != nil {
+			return nil, err
+		}
+		// wait the ExecDataReply Msg
+		select {
+		case <-n.ctx.Done():
+			return nil, nil
+		case value := <-n.waitAck.waitNotif(msg.RequestID):
+			if value == nil { // if there's an error in the catalog
+				return nil, xerrors.Errorf("error in catalog addresses")
+			}
+			n.conf.Storage.GetDataBlobStore().Set(name, value)
+			return value, nil
+		case <-time.After(waitingTime): // resend the message to another neighbor
+		}
+
+		// if timeout reached
+		waitingTime = waitingTime * time.Duration(n.conf.BackoffDataRequest.Factor)
+		nbRetry++
+		if nbRetry > n.conf.BackoffDataRequest.Retry {
+			return nil, xerrors.Errorf("max number of retry reached to %v", peerChunk)
+		}
+	}
 }
 
 // GetCatalog implement the peer.DataSharing
@@ -436,7 +493,7 @@ func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
 	}
 	hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
 	pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
-	n.waitAck.requestAck(pkToRelay.Header.PacketID)
+	n.waitAck.requestNotif(pkToRelay.Header.PacketID)
 	return n.conf.Socket.Send(dest, pkToRelay, time.Millisecond*1000)
 }
 

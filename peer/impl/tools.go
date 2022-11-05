@@ -169,40 +169,48 @@ func (pr *RumorsManager) GetSeq() uint {
 	return uint((*pr).sequence)
 }
 
-// AckNotification notify which ack has been received by whom
-type AckNotification struct {
+// Notification notify which ack has been received by whom
+type Notification struct {
 	// notif create for each PacketID which need an ack a channel for signaling if ack has been received or not
-	notif map[string]chan bool
+	notif map[string]chan []byte
 	mu    sync.RWMutex
 }
 
-// Init initialize AckNotification
-func (an *AckNotification) Init() {
+// Init initialize Notification
+func (an *Notification) Init() {
 	an.mu.Lock()
 	defer an.mu.Unlock()
-	an.notif = make(map[string]chan bool)
+	an.notif = make(map[string]chan []byte)
 }
 
-// waitAck request for an Ack with the ID pckID
-func (an *AckNotification) requestAck(pckID string) {
+// waitNotif request for an Ack with the ID pckID
+func (an *Notification) requestNotif(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()
-	an.notif[pckID] = make(chan bool)
+	an.notif[pckID] = make(chan []byte)
 }
 
-// waitAck return a channel which is closed when ack has been received
-func (an *AckNotification) waitAck(pckID string) chan bool {
+// waitNotif return a channel which is closed when ack has been received
+func (an *Notification) waitNotif(pckID string) chan []byte {
 	an.mu.Lock()
 	defer an.mu.Unlock()
 	channel := an.notif[pckID]
 	return channel
 }
 
-// signalAck signal by its corresponding channel that the pckID's Ack was received
-func (an *AckNotification) signalAck(pckID string) {
+// signalNotif signal by its corresponding channel that the pckID's Ack was received
+func (an *Notification) signalNotif(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()
 	close(an.notif[pckID])
+}
+
+// sendNotif signal by its corresponding channel that the pckID's Ack was received and its content
+func (an *Notification) sendNotif(pckID string, value []byte) {
+	an.mu.Lock()
+	defer an.signalNotif(pckID)
+	defer an.mu.Unlock()
+	an.notif[pckID] <- value
 }
 
 // ConcurrentCatalog define a safe way to access the Catalog.

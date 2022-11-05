@@ -54,7 +54,7 @@ type node struct {
 	waitAck Notification
 	// mutex controlling send/recv rumors msg
 	rumorMu sync.Mutex
-	// catalog defining where metahashes and chunks can be found
+	// catalog defines where metahashes and chunks can be found
 	catalog ConcurrentCatalog
 }
 
@@ -439,6 +439,19 @@ func (n *node) DownloadChunk(name string) ([]byte, error) {
 			return nil, xerrors.Errorf("max number of retry reached to %v", peerChunk)
 		}
 	}
+}
+
+// Tag implement the peer.DataSharing
+func (n *node) Tag(name string, mh string) error {
+	NamingStore := n.conf.Storage.GetNamingStore()
+	NamingStore.Set(name, []byte(mh))
+	return nil
+}
+
+// Resolve implement the peer.DataSharing
+func (n *node) Resolve(name string) (metahash string) {
+	NamingStore := n.conf.Storage.GetNamingStore()
+	return string(NamingStore.Get(name))
 }
 
 // GetCatalog implement the peer.DataSharing

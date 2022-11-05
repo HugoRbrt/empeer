@@ -1,0 +1,180 @@
+package impl
+
+import (
+	"github.com/rs/zerolog/log"
+	"go.dedis.ch/cs438/transport"
+	"go.dedis.ch/cs438/types"
+	"golang.org/x/xerrors"
+	"math/rand"
+	"time"
+)
+
+// Handler for each types of message
+
+func (n *node) ExecChatMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	chatMsg, ok := msg.(*types.ChatMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	_ = pkt
+
+	log.Info().Msg(chatMsg.String())
+
+	return nil
+}
+
+func (n *node) ExecEmptyMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	_, ok := msg.(*types.EmptyMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	_ = pkt
+
+	return nil
+}
+
+func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error {
+	n.rumorMu.Lock()
+	// cast the message to its actual type. You assume it is the right type.
+	rumorsMsg, ok := msg.(*types.RumorsMessage)
+	if !ok {
+		n.rumorMu.Unlock()
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+
+	noExpected := true // value to verify if at least one rumor is expected
+	// Process each expected rumor contained in the RumorsMessage
+	for _, rumor := range rumorsMsg.Rumors {
+		// we ignore not expected rumors
+		if !n.rumors.IsExpected(rumor.Origin, int(rumor.Sequence)) {
+			continue
+		}
+		noExpected = false
+		// process rumor’s embedded message
+		packet := transport.Packet{
+			Header: pkt.Header,
+			Msg:    rumor.Msg,
+		}
+		err := n.conf.MessageRegistry.ProcessPacket(packet)
+		if err != nil {
+			n.rumorMu.Unlock()
+			return err
+		}
+		n.rumors.Process(rumor.Origin, rumor, &n.table, pkt.Header.RelayedBy)
+	}
+
+	// Send back an AckMessage to the source
+	statusMsg := types.StatusMessage(n.rumors.GetView())
+	ack := types.AckMessage{
+		AckedPacketID: pkt.Header.PacketID,
+		Status:        statusMsg,
+	}
+	transAck, err := n.conf.MessageRegistry.MarshalMessage(&ack)
+	if err != nil {
+		n.rumorMu.Unlock()
+		return err
+	}
+	ackHeader := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), pkt.Header.Source, 0)
+	ackPacket := transport.Packet{Header: &ackHeader, Msg: &transAck}
+	n.rumorMu.Unlock()
+	err = n.conf.Socket.Send(pkt.Header.Source, ackPacket, time.Millisecond*1000)
+	if err != nil {
+		return err
+	}
+
+	// Send the RumorsMessage to another random neighbor if at least on rumor is expected
+	if !noExpected {
+		ok, rdmNeighbor := n.table.GetRandomNeighbors([]string{n.conf.Socket.GetAddress(), pkt.Header.Source})
+		if !ok {
+			// if no other neighbors, do nothing
+			return nil
+		}
+		headerRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), rdmNeighbor, 0)
+		pktRelay := transport.Packet{
+			Header: &headerRelay,
+			Msg:    pkt.Msg,
+		}
+		n.waitAck.requestAck(pktRelay.Header.PacketID)
+		return n.conf.Socket.Send(rdmNeighbor, pktRelay, time.Millisecond*1000)
+	}
+	return nil
+}
+
+func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error {
+	n.rumorMu.Lock()
+	defer n.rumorMu.Unlock()
+	// cast the message to its actual type. You assume it is the right type.
+	statusMsg, ok := msg.(*types.StatusMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+
+	if SameStatus(*statusMsg, n.rumors.GetView()) {
+		// if Both peers have the same view.
+		// then ContinueMongering with probability "n.conf.ContinueMongering"
+		if rand.Float64() < n.conf.ContinueMongering || n.conf.ContinueMongering == 1 {
+			return n.SendView([]string{pkt.Header.Source}, "")
+		}
+		return nil
+	}
+	iDontHave := CompareView(n.rumors.GetView(), *statusMsg)
+	if len(iDontHave) > 0 {
+		// has Rumors that the remote peer doesn't have.
+		// then send a status message to the remote peer
+		err := n.SendView([]string{}, pkt.Header.Source)
+		if err != nil {
+			return err
+		}
+	}
+	itDoesntHave := CompareView(*statusMsg, n.rumors.GetView())
+	if len(itDoesntHave) > 0 {
+		// remote peer has Rumors that the peer doesn't have
+		// then sent rumors that remote peer doesn't have (in order of increasing sequence number)
+		err := n.sendDiffView(*statusMsg, pkt.Header.Source)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (n *node) ExecAckMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	ackMsg, ok := msg.(*types.AckMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+
+	// stops the timer
+	n.waitAck.signalAck(ackMsg.AckedPacketID)
+	// process embeds message
+	transMsg, err := n.conf.MessageRegistry.MarshalMessage(ackMsg.Status)
+	if err != nil {
+		return err
+	}
+	packet := transport.Packet{
+		Header: pkt.Header,
+		Msg:    &transMsg,
+	}
+	return n.conf.MessageRegistry.ProcessPacket(packet)
+}
+
+func (n *node) ExecPrivateMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	privMsg, ok := msg.(*types.PrivateMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	// Process only if the peer’s socket address is in the list of recipients
+	if _, b := privMsg.Recipients[n.conf.Socket.GetAddress()]; b {
+		packet := transport.Packet{
+			Header: pkt.Header,
+			Msg:    privMsg.Msg,
+		}
+		return n.conf.MessageRegistry.ProcessPacket(packet)
+	}
+	return nil
+}

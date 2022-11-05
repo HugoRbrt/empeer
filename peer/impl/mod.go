@@ -27,6 +27,7 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.table = ConcurrentRouteTable{R: make(map[string]string)}
 	node.rumors.Init()
 	node.waitAck.Init()
+	node.catalog.Init()
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
 	// create a new context which allows goroutine to know if Stop() is call
 	node.ctx, node.cancel = context.WithCancel(context.Background())
@@ -223,6 +224,8 @@ type node struct {
 	waitAck AckNotification
 	// mutex controlling send/recv rumors msg
 	rumorMu sync.Mutex
+	// catalog defining where metahashes and chunks can be found
+	catalog ConcurrentCatalog
 }
 
 // Start implements peer.Service
@@ -527,6 +530,16 @@ func (n *node) Upload(data io.Reader) (metahash string, err error) {
 	return metahash, nil
 }
 
+// GetCatalog implement the peer.DataSharing
+func (n *node) GetCatalog() peer.Catalog {
+	return n.catalog.GetCatalog()
+}
+
+// UpdateCatalog implement the peer.DataSharing
+func (n *node) UpdateCatalog(key string, peer string) {
+	n.catalog.UpdateCatalog(key, peer)
+}
+
 // SendView send the nodes' view by a statusMessage to dest or
 // if dest == "", send to a random neighbor (except those given in params)
 func (n *node) SendView(except []string, dest string) error {
@@ -786,4 +799,43 @@ func (an *AckNotification) signalAck(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()
 	close(an.notif[pckID])
+}
+
+// ConcurrentCatalog define a safe way to access the Catalog.
+type ConcurrentCatalog struct {
+	catalog peer.Catalog
+	mu      sync.RWMutex
+}
+
+// Init initialize the concurrentCatalog
+func (c *ConcurrentCatalog) Init() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	(*c).catalog = make(peer.Catalog)
+}
+
+// GetCatalog returns the peer's catalog.
+func (c *ConcurrentCatalog) GetCatalog() peer.Catalog {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	catalogCopy := make(peer.Catalog)
+	for k, v := range (*c).catalog {
+		tempMap := make(map[string]struct{})
+		for k2, v2 := range v {
+			tempMap[k2] = v2
+		}
+		catalogCopy[k] = tempMap
+	}
+	return catalogCopy
+}
+
+// UpdateCatalog tells the peer about a piece of data referenced by 'key'
+// being available on peer
+func (c *ConcurrentCatalog) UpdateCatalog(key string, peer string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.catalog[key] == nil {
+		c.catalog[key] = make(map[string]struct{})
+	}
+	c.catalog[key][peer] = struct{}{}
 }

@@ -404,7 +404,7 @@ func (n *node) DownloadChunk(name string) ([]byte, error) {
 		return nil, xerrors.Errorf("unknown destination address")
 	}
 	waitingTime := n.conf.BackoffDataRequest.Initial
-	var nbRetry uint = 0
+	var nbRetry uint
 	for {
 		// prepare message
 		msg := types.DataRequestMessage{RequestID: xid.New().String(), Key: name}

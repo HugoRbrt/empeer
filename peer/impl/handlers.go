@@ -188,7 +188,6 @@ func (n *node) ExecDataRequestMessage(msg types.Message, pkt transport.Packet) e
 	}
 	// give a response:
 	hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), pkt.Header.Source, 0)
-	// TODO: how t find neighbor to send back ? (relay Name or the neighbor in table)
 	nextHop, exist := n.table.Get(pkt.Header.RelayedBy)
 	if !exist {
 		return xerrors.Errorf("unknown destination address for response")
@@ -215,6 +214,7 @@ func (n *node) ExecDataReplyMessage(msg types.Message, pkt transport.Packet) err
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
+	_ = pkt
 	// stops the timer and send obtained value
 	n.waitAck.sendNotif(dataReplyMsg.RequestID, dataReplyMsg.Value)
 	return nil

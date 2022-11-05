@@ -2,10 +2,13 @@ package impl
 
 import (
 	"go.dedis.ch/cs438/peer"
+	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"io"
 	"math/rand"
+	"sort"
 	"sync"
+	"time"
 )
 
 // ConcurrentRouteTable define a safe way to access the RoutingTable.
@@ -264,4 +267,70 @@ func (c *ConcurrentCatalog) RandomPeer(key string) string {
 		peers = append(peers, p)
 	}
 	return peers[rand.Int()%len(peers)]
+}
+
+// OTHER FUNCTIONS
+
+// SendView send the nodes' view by a statusMessage to dest or
+// if dest == "", send to a random neighbor (except those given in params)
+func (n *node) SendView(except []string, dest string) error {
+	neighbor := dest
+	var ok bool
+	if neighbor == "" {
+		// Pick a random neighbor which is not in except
+		allowsNeighbors := append([]string{n.conf.Socket.GetAddress()}, except...)
+		ok, neighbor = n.table.GetRandomNeighbors(allowsNeighbors)
+		if !ok {
+			// if no neighbor was found: do nothing
+			return nil
+		}
+	}
+	statusMsg := types.StatusMessage(n.rumors.GetView())
+	transMsg, err := n.conf.MessageRegistry.MarshalMessage(&statusMsg)
+	if err != nil {
+		return err
+	}
+	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
+	pkt := transport.Packet{Header: &header, Msg: &transMsg}
+	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
+}
+
+// sendDiffView send rumors which msg doesn't have (in order of increasing sequence number)
+func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
+	diff := CompareView(msg, n.rumors.GetView())
+	var rumorList []types.Rumor
+	for _, addr := range diff {
+		// send all rumors from addr which is not already received by
+		rumorList = append(rumorList, n.rumors.GetRumorsFrom(addr)[msg[addr]:]...)
+	}
+	// Sort rumorList by ascending sequence number
+	sort.Slice(rumorList, func(i, j int) bool {
+		return rumorList[i].Sequence < rumorList[j].Sequence
+	})
+	rumors := types.RumorsMessage{
+		Rumors: rumorList,
+	}
+	transMsg, err := n.conf.MessageRegistry.MarshalMessage(rumors)
+	if err != nil {
+		return err
+	}
+	hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
+	pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
+	n.waitAck.requestNotif(pkToRelay.Header.PacketID)
+	return n.conf.Socket.Send(dest, pkToRelay, time.Millisecond*1000)
+}
+
+// SameStatus return m1 == m2 for StatusMessage
+func SameStatus(m1 types.StatusMessage, m2 types.StatusMessage) bool {
+	for i := range m1 {
+		if m1[i] != m2[i] {
+			return false
+		}
+	}
+	for i := range m2 {
+		if m1[i] != m2[i] {
+			return false
+		}
+	}
+	return true
 }

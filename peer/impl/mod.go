@@ -12,7 +12,6 @@ import (
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
 	"io"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +56,8 @@ type node struct {
 	// catalog defines where metahashes and chunks can be found
 	catalog ConcurrentCatalog
 }
+
+// HOMEWORK 0
 
 // Start implements peer.Service
 func (n *node) Start() error {
@@ -119,6 +120,39 @@ func (n *node) Start() error {
 	return nil
 }
 
+// Stop implements peer.Service
+func (n *node) Stop() error {
+	// warn all goroutine to stop
+	n.cancel()
+	//block until all goroutines are done
+	n.wg.Wait()
+	return nil
+}
+
+// AddPeer implements peer.Service
+func (n *node) AddPeer(addresses ...string) {
+	for _, addr := range addresses {
+		if n.conf.Socket.GetAddress() == addr { // Adding ourself should have no effect.
+			continue
+		}
+		n.table.SetEntry(addr, addr)
+	}
+}
+
+// GetRoutingTable implements peer.Service
+func (n *node) GetRoutingTable() peer.RoutingTable {
+	return n.table.Copy()
+}
+
+// SetRoutingEntry implements peer.Service
+func (n *node) SetRoutingEntry(origin, relayAddr string) {
+	if relayAddr == "" {
+		n.table.DeleteEntry(origin)
+	} else {
+		n.table.SetEntry(origin, relayAddr)
+	}
+}
+
 // ProcessMessage permit to process a message (relay, register...)
 func (n *node) ProcessMessage(pkt transport.Packet) error {
 	// is this message for this node?
@@ -142,15 +176,6 @@ func (n *node) ProcessMessage(pkt transport.Packet) error {
 	return nil
 }
 
-// Stop implements peer.Service
-func (n *node) Stop() error {
-	// warn all goroutine to stop
-	n.cancel()
-	//block until all goroutines are done
-	n.wg.Wait()
-	return nil
-}
-
 // Unicast implements peer.Messaging
 func (n *node) Unicast(dest string, msg transport.Message) error {
 	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
@@ -161,6 +186,8 @@ func (n *node) Unicast(dest string, msg transport.Message) error {
 	}
 	return n.conf.Socket.Send(nextHop, packet, time.Millisecond*1000)
 }
+
+// HOMEWORK 1
 
 // Broadcast implements peer.Messaging
 func (n *node) Broadcast(msg transport.Message) error {
@@ -250,30 +277,6 @@ func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Messag
 	}
 }
 
-// AddPeer implements peer.Service
-func (n *node) AddPeer(addresses ...string) {
-	for _, addr := range addresses {
-		if n.conf.Socket.GetAddress() == addr { // Adding ourself should have no effect.
-			continue
-		}
-		n.table.SetEntry(addr, addr)
-	}
-}
-
-// GetRoutingTable implements peer.Service
-func (n *node) GetRoutingTable() peer.RoutingTable {
-	return n.table.Copy()
-}
-
-// SetRoutingEntry implements peer.Service
-func (n *node) SetRoutingEntry(origin, relayAddr string) {
-	if relayAddr == "" {
-		n.table.DeleteEntry(origin)
-	} else {
-		n.table.SetEntry(origin, relayAddr)
-	}
-}
-
 // AntiEntropy implement the anti entropy mechanism to make nodes’ views consistent
 func (n *node) AntiEntropy() error {
 	if n.conf.AntiEntropyInterval == 0 {
@@ -319,6 +322,8 @@ func (n *node) Heartbeat() error {
 		time.Sleep(n.conf.HeartbeatInterval)
 	}
 }
+
+// HOMEWORK 2
 
 // Upload implement the peer.DataSharing
 func (n *node) Upload(data io.Reader) (metahash string, err error) {
@@ -462,68 +467,4 @@ func (n *node) GetCatalog() peer.Catalog {
 // UpdateCatalog implement the peer.DataSharing
 func (n *node) UpdateCatalog(key string, peer string) {
 	n.catalog.UpdateCatalog(key, peer)
-}
-
-// SendView send the nodes' view by a statusMessage to dest or
-// if dest == "", send to a random neighbor (except those given in params)
-func (n *node) SendView(except []string, dest string) error {
-	neighbor := dest
-	var ok bool
-	if neighbor == "" {
-		// Pick a random neighbor which is not in except
-		allowsNeighbors := append([]string{n.conf.Socket.GetAddress()}, except...)
-		ok, neighbor = n.table.GetRandomNeighbors(allowsNeighbors)
-		if !ok {
-			// if no neighbor was found: do nothing
-			return nil
-		}
-	}
-	statusMsg := types.StatusMessage(n.rumors.GetView())
-	transMsg, err := n.conf.MessageRegistry.MarshalMessage(&statusMsg)
-	if err != nil {
-		return err
-	}
-	header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
-	pkt := transport.Packet{Header: &header, Msg: &transMsg}
-	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
-}
-
-// sendDiffView send rumors which msg doesn't have (in order of increasing sequence number)
-func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
-	diff := CompareView(msg, n.rumors.GetView())
-	var rumorList []types.Rumor
-	for _, addr := range diff {
-		// send all rumors from addr which is not already received by
-		rumorList = append(rumorList, n.rumors.GetRumorsFrom(addr)[msg[addr]:]...)
-	}
-	// Sort rumorList by ascending sequence number
-	sort.Slice(rumorList, func(i, j int) bool {
-		return rumorList[i].Sequence < rumorList[j].Sequence
-	})
-	rumors := types.RumorsMessage{
-		Rumors: rumorList,
-	}
-	transMsg, err := n.conf.MessageRegistry.MarshalMessage(rumors)
-	if err != nil {
-		return err
-	}
-	hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), dest, 0)
-	pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}
-	n.waitAck.requestNotif(pkToRelay.Header.PacketID)
-	return n.conf.Socket.Send(dest, pkToRelay, time.Millisecond*1000)
-}
-
-// SameStatus return m1 == m2 for StatusMessage
-func SameStatus(m1 types.StatusMessage, m2 types.StatusMessage) bool {
-	for i := range m1 {
-		if m1[i] != m2[i] {
-			return false
-		}
-	}
-	for i := range m2 {
-		if m1[i] != m2[i] {
-			return false
-		}
-	}
-	return true
 }

@@ -180,6 +180,35 @@ func (n *node) ExecPrivateMessage(msg types.Message, pkt transport.Packet) error
 	return nil
 }
 
+func (n *node) ExecDataRequestMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	dataReplyMsg, ok := msg.(*types.DataRequestMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	// give a response:
+	hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), pkt.Header.Source, 0)
+	// TODO: how t find neighbor to send back ? (relay Name or the neighbor in table)
+	nextHop, exist := n.table.Get(pkt.Header.RelayedBy)
+	if !exist {
+		return xerrors.Errorf("unknown destination address for response")
+	}
+	msgResponse := types.DataReplyMessage{
+		RequestID: dataReplyMsg.RequestID,
+		Key:       dataReplyMsg.Key,
+		Value:     n.conf.Storage.GetDataBlobStore().Get(dataReplyMsg.Key),
+	}
+	transMsg, err := n.conf.MessageRegistry.MarshalMessage(msgResponse)
+	if err != nil {
+		return err
+	}
+	pktResponse := transport.Packet{Header: &hdr, Msg: &transMsg}
+
+	// send msg
+	err = n.conf.Socket.Send(nextHop, pktResponse, time.Millisecond*1000)
+	return err
+}
+
 func (n *node) ExecDataReplyMessage(msg types.Message, pkt transport.Packet) error {
 	// cast the message to its actual type. You assume it is the right type.
 	dataReplyMsg, ok := msg.(*types.DataReplyMessage)

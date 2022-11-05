@@ -67,6 +67,8 @@ func (n *node) Start() error {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.StatusMessage{}, n.ExecStatusMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.AckMessage{}, n.ExecAckMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.PrivateMessage{}, n.ExecPrivateMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.DataRequestMessage{}, n.ExecDataRequestMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.DataReplyMessage{}, n.ExecDataReplyMessage)
 
 	// we signal when the goroutine starts and when it ends
 	n.wg.Add(1)
@@ -127,6 +129,7 @@ func (n *node) ProcessMessage(pkt transport.Packet) error {
 			return err
 		}
 	} else {
+		log.Info().Msgf("msg not for us")
 		// no: relay the message to the next hop if it exists
 		header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)
 		packet := transport.Packet{Header: &header, Msg: pkt.Msg}

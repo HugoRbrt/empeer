@@ -2,6 +2,8 @@ package impl
 
 import (
 	"context"
+	"crypto"
+	"encoding/hex"
 	"errors"
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/peer"
@@ -11,6 +13,7 @@ import (
 	"io"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -25,6 +28,8 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.rumors.Init()
 	node.waitAck.Init()
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
+	// create a new context which allows goroutine to know if Stop() is call
+	node.ctx, node.cancel = context.WithCancel(context.Background())
 	return &node
 }
 
@@ -222,8 +227,6 @@ type node struct {
 
 // Start implements peer.Service
 func (n *node) Start() error {
-	// create a new context which allows goroutine to know if Stop() is call
-	n.ctx, n.cancel = context.WithCancel(context.Background())
 	// add handler associated to all known message types
 	n.conf.MessageRegistry.RegisterMessageCallback(types.ChatMessage{}, n.ExecChatMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.EmptyMessage{}, n.ExecEmptyMessage)
@@ -479,6 +482,49 @@ func (n *node) Heartbeat() error {
 		}
 		time.Sleep(n.conf.HeartbeatInterval)
 	}
+}
+
+// Upload implement the peer.DataSharing
+func (n *node) Upload(data io.Reader) (metahash string, err error) {
+	var HashHexs []string
+	var HashShas []byte
+	storageSpace := n.conf.Storage.GetDataBlobStore()
+	for {
+		// read the next chunk
+		var chunk = make([]byte, n.conf.ChunkSize)
+		length, err := data.Read(chunk)
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
+				return "", err
+			}
+		}
+		// compute hash
+		hash := crypto.SHA256.New()
+		_, err = hash.Write(chunk[:length])
+		if err != nil {
+			return "", err
+		}
+		hashSha := hash.Sum(nil)
+		hashHex := hex.EncodeToString(hashSha[:])
+		// store the chunk
+		storageSpace.Set(hashHex, chunk[:length])
+		// keep in memory Hash
+		HashShas = append(HashShas, hashSha[:]...)
+		HashHexs = append(HashHexs, hashHex)
+	}
+	// Store MetaFile
+	hash := crypto.SHA256.New()
+	_, err = hash.Write(HashShas)
+	if err != nil {
+		return "", err
+	}
+	hashSha := hash.Sum(nil)
+	metahash = hex.EncodeToString(hashSha[:])
+	metaFileContent := []byte(strings.Join(HashHexs, peer.MetafileSep))
+	storageSpace.Set(metahash, metaFileContent)
+	return metahash, nil
 }
 
 // SendView send the nodes' view by a statusMessage to dest or

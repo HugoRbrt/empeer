@@ -491,15 +491,9 @@ func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except [
 		for _, neighbor := range neighborsList[:budget] {
 			// send to neighbor the search with budget == 1
 			msg.Budget = 1
-			if Src {
-				msg.RequestID = xid.New().String()
-				n.fileNotif.requestNotif(msg.RequestID, budget)
-				listRequestID = append(listRequestID, msg.RequestID)
-			}
-			// send msg
-			err := n.sendSearch(neighbor, msg)
-			if err != nil {
-				return nil, err
+			err2 := n.funcName(budget, msg, Src, &listRequestID, neighbor)
+			if err2 != nil {
+				return nil, err2
 			}
 		}
 	} else {
@@ -514,18 +508,25 @@ func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except [
 			}
 			// send to neighbor the search with budget neighborBudget
 			msg.Budget = neighborBudget
-			if Src {
-				msg.RequestID = xid.New().String()
-				n.fileNotif.requestNotif(msg.RequestID, budget)
-				listRequestID = append(listRequestID, msg.RequestID)
-			}
-			err := n.sendSearch(neighbor, msg)
-			if err != nil {
-				return nil, err
+			err2 := n.funcName(neighborBudget, msg, Src, &listRequestID, neighbor)
+			if err2 != nil {
+				return nil, err2
 			}
 		}
 	}
 	return listRequestID, nil
+}
+
+func (n *node) funcName(budget uint, msg types.SearchRequestMessage, Src bool,
+	listRequestID *[]string, neighbor string) error {
+
+	if Src {
+		msg.RequestID = xid.New().String()
+		n.fileNotif.requestNotif(msg.RequestID, budget)
+		*listRequestID = append(*listRequestID, msg.RequestID)
+	}
+	// send msg
+	return n.sendSearch(neighbor, msg)
 }
 
 // sendSearch send the search message to neighbor

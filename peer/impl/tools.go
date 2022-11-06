@@ -2,6 +2,7 @@ package impl
 
 import (
 	"github.com/rs/xid"
+	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/storage"
 	"go.dedis.ch/cs438/transport"
@@ -481,64 +482,69 @@ func parseAndStoreFile(file types.FileInfo, WithEmpty bool, files *[]types.FileI
 
 // shareSearch propagate the search and get listen of ID to listen for response is it's a source
 func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except []string, Src bool) ([]string, error) {
+	log.Info().Msgf("budget: %v", budget)
 	neighborsList := n.table.GetListNeighbors(except)
 	var listRequestID []string
+	var budgets []uint
 	nbNeighbors := uint(len(neighborsList))
 	if nbNeighbors == 0 {
 		return nil, nil
 	}
+	// distribute budget between neighbors
 	if budget <= nbNeighbors {
-		for _, neighbor := range neighborsList[:budget] {
-			// send to neighbor the search with budget == 1
-			msg.Budget = 1
-			err2 := n.funcName(budget, msg, Src, &listRequestID, neighbor)
-			if err2 != nil {
-				return nil, err2
-			}
+		log.Info().Msgf("<=")
+		budgets = make([]uint, budget)
+		for i := range budgets {
+			budgets[i] = 1
 		}
 	} else {
+		log.Info().Msgf(">")
+		budgets = make([]uint, len(neighborsList))
 		budgetPerNeighbor := budget / nbNeighbors
 		if budget%nbNeighbors >= nbNeighbors-1 {
 			budgetPerNeighbor++
 		}
-		for numNeighbor, neighbor := range neighborsList {
+		log.Info().Msgf("perNeighbors: %v", budgetPerNeighbor)
+		for numNeighbor := range neighborsList {
 			neighborBudget := budgetPerNeighbor
 			if numNeighbor == 0 {
 				neighborBudget += budget - nbNeighbors*budgetPerNeighbor
 			}
 			// send to neighbor the search with budget neighborBudget
-			msg.Budget = neighborBudget
-			err2 := n.funcName(neighborBudget, msg, Src, &listRequestID, neighbor)
-			if err2 != nil {
-				return nil, err2
-			}
+			budgets[numNeighbor] = neighborBudget
 		}
+	}
+	err := n.DistributeSearch(budgets, msg, Src, &listRequestID, neighborsList)
+	if err != nil {
+		return nil, err
 	}
 	return listRequestID, nil
 }
 
-func (n *node) funcName(budget uint, msg types.SearchRequestMessage, Src bool,
-	listRequestID *[]string, neighbor string) error {
+func (n *node) DistributeSearch(budgets []uint, msg types.SearchRequestMessage, Src bool,
+	listRequestID *[]string, neighbors []string) error {
+	for i, budget := range budgets {
+		log.Info().Msgf("send to %v with budget: %v", neighbors[i], budget)
+		msg.Budget = budget
 
-	if Src {
-		msg.RequestID = xid.New().String()
-		n.fileNotif.requestNotif(msg.RequestID, budget)
-		*listRequestID = append(*listRequestID, msg.RequestID)
+		if Src {
+			msg.RequestID = xid.New().String()
+			n.fileNotif.requestNotif(msg.RequestID, budget)
+			*listRequestID = append(*listRequestID, msg.RequestID)
+		}
+		hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbors[i], 0)
+		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+		if err != nil {
+			return err
+		}
+		pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
+
+		err = n.conf.Socket.Send(neighbors[i], pkt, time.Millisecond*1000)
+		if err != nil {
+			return err
+		}
 	}
-	// send msg
-	return n.sendSearch(neighbor, msg)
-}
-
-// sendSearch send the search message to neighbor
-func (n *node) sendSearch(neighbor string, msg types.SearchRequestMessage) (err error) {
-	hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
-
-	transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
-	if err != nil {
-		return err
-	}
-	pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
-	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
+	return nil
 }
 
 // FullyKnownFile return the firs file fully known by a peer, or "" if it doesn't exist

@@ -213,7 +213,7 @@ func (an *Notification) Init() {
 func (an *Notification) requestNotif(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()
-	an.notif[pckID] = make(chan []byte)
+	an.notif[pckID] = make(chan []byte, 1)
 }
 
 // waitNotif return a channel which is closed when ack has been received

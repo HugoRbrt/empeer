@@ -234,7 +234,7 @@ func (n *node) ExecSearchRequestMessage(msg types.Message, pkt transport.Packet)
 	}
 	// forward search
 	if budget > 0 {
-		err, _ = n.shareSearch(budget, *searchRequestMsg, []string{pkt.Header.Source, n.conf.Socket.GetAddress()}, false)
+		_, err = n.shareSearch(budget, *searchRequestMsg, []string{pkt.Header.Source, n.conf.Socket.GetAddress()}, false)
 		if err != nil {
 			return err
 		}
@@ -263,10 +263,6 @@ func (n *node) ExecSearchReplyMessage(msg types.Message, pkt transport.Packet) e
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 	// stops the timer and send obtained value
-	var listNames []string
-	for _, f := range searchReplyMsg.Responses {
-		listNames = append(listNames, f.Name)
-	}
 	n.fileNotif.sendNotif(searchReplyMsg.RequestID, searchReplyMsg.Responses)
 	// update catalog with responses
 	for _, f := range searchReplyMsg.Responses {
@@ -277,18 +273,11 @@ func (n *node) ExecSearchReplyMessage(msg types.Message, pkt transport.Packet) e
 		}
 		n.UpdateCatalog(f.Metahash, pkt.Header.Source)
 		//update catalog
-		fullyKnow := true
 		for _, chunk := range f.Chunks {
 			if chunk != nil {
 				n.UpdateCatalog(string(chunk), pkt.Header.Source)
-			} else {
-				fullyKnow = false
 			}
 		}
-		if fullyKnow {
-
-		}
-		// if its a response to a searchFirst, and the file is fully known, prevent searchFirst
 	}
 	return nil
 }

@@ -2,7 +2,6 @@ package impl
 
 import (
 	"github.com/rs/xid"
-	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
@@ -322,7 +321,6 @@ func (c *ConcurrentCatalog) UpdateCatalog(key string, peer string) {
 	_, ok := c.catalog[key]
 	if !ok {
 		c.catalog[key] = make(map[string]struct{})
-		c.catalog[key] = c.catalog[key]
 	}
 
 	c.catalog[key][peer] = struct{}{}
@@ -470,12 +468,11 @@ func (n *node) searchLocally(reg regexp.Regexp, WithEmpty bool) (files []types.F
 }
 
 // shareSearch propagate the search and get listen of ID to listen for response is it's a source
-func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except []string, Src bool) (error, []string) {
+func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except []string, Src bool) ([]string, error) {
 	neighborsList := n.table.GetListNeighbors(except)
 	var listRequestID []string
 	nbNeighbors := uint(len(neighborsList))
 	if nbNeighbors == 0 {
-		log.Info().Msgf("no neighbors to propagate SearchAll")
 		return nil, nil
 	}
 	if budget <= nbNeighbors {
@@ -490,7 +487,7 @@ func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except [
 			// send msg
 			err := n.sendSearch(neighbor, msg)
 			if err != nil {
-				return err, nil
+				return nil, err
 			}
 		}
 	} else {
@@ -512,11 +509,11 @@ func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except [
 			}
 			err := n.sendSearch(neighbor, msg)
 			if err != nil {
-				return err, nil
+				return nil, err
 			}
 		}
 	}
-	return nil, listRequestID
+	return listRequestID, nil
 }
 
 // sendSearch send the search message to neighbor
@@ -531,27 +528,37 @@ func (n *node) sendSearch(neighbor string, msg types.SearchRequestMessage) (err 
 	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
 }
 
+// FullyKnownFile return the firs file fully known by a peer, or "" if it doesn't exist
 func (n *node) FullyKnownFile(listID []string) string {
 	for _, id := range listID {
 		channelIsClosed := false
 		for !channelIsClosed {
 			select {
-			case value := <-n.fileNotif.waitNotif(id):
-				for _, file := range value {
-					fullyKnown := true
-					for _, chunk := range file.Chunks {
-						if chunk == nil {
-							fullyKnown = false
-						}
-					}
-					if fullyKnown {
-						return file.Name
-					}
+			case responses := <-n.fileNotif.waitNotif(id):
+				result := ContainFullyKnown(responses)
+				if result != "" {
+					return result
 				}
 			default:
 				n.fileNotif.signalNotif(id)
 				channelIsClosed = true
 			}
+		}
+	}
+	return ""
+}
+
+// ContainFullyKnown return the first file fully known in a list, "" if it doesn't exist
+func ContainFullyKnown(files []types.FileInfo) string {
+	for _, file := range files {
+		fullyKnown := true
+		for _, chunk := range file.Chunks {
+			if chunk == nil {
+				fullyKnown = false
+			}
+		}
+		if fullyKnown {
+			return file.Name
 		}
 	}
 	return ""

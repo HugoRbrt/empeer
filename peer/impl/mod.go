@@ -487,7 +487,7 @@ func (n *node) SearchAll(reg regexp.Regexp, budget uint, timeout time.Duration) 
 	}
 	// send request to neighbors
 	msg := types.SearchRequestMessage{Origin: n.conf.Socket.GetAddress(), Pattern: reg.String()}
-	err, listRequestID := n.shareSearch(budget, msg, []string{n.conf.Socket.GetAddress()}, true)
+	listRequestID, err := n.shareSearch(budget, msg, []string{n.conf.Socket.GetAddress()}, true)
 	if err != nil {
 		return nil, err
 	}
@@ -532,12 +532,12 @@ func (n *node) SearchFirst(pattern regexp.Regexp, conf peer.ExpandingRing) (name
 		}
 	}
 	// expanding ring algorithm:
-	var nbRetry uint = 0
+	var nbRetry uint
 	budget := conf.Initial
 	for nbRetry < conf.Retry {
 		// send request
 		msg := types.SearchRequestMessage{Origin: n.conf.Socket.GetAddress(), Pattern: pattern.String()}
-		err, listRequestID := n.shareSearch(budget, msg, []string{n.conf.Socket.GetAddress()}, true)
+		listRequestID, err := n.shareSearch(budget, msg, []string{n.conf.Socket.GetAddress()}, true)
 		if err != nil {
 			return "", err
 		}

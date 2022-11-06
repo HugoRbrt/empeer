@@ -2,7 +2,6 @@ package impl
 
 import (
 	"github.com/rs/xid"
-	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/storage"
 	"go.dedis.ch/cs438/transport"
@@ -461,28 +460,33 @@ func parseAndStoreFile(file types.FileInfo, WithEmpty bool, files *[]types.FileI
 		}
 
 	} else {
-		chunksHexs := strings.Split(string(fileContent), peer.MetafileSep)
-		var chunkList [][]byte
-		for _, chunkHex := range chunksHexs {
-			c := storageSpace.Get(chunkHex)
-			if c == nil {
-				chunkList = append(chunkList, nil)
-			} else {
-				chunkList = append(chunkList, []byte(chunkHex))
-			}
-		}
-		*files = append(*files, types.FileInfo{
-			Name:     name,
-			Metahash: hashFile,
-			Chunks:   chunkList,
-		})
+		ParseAndStoreChunks(fileContent, storageSpace, files, name, hashFile)
 	}
 	return false
 }
 
+// ParseAndStoreChunks update files by adding FileInfo of the corresponding chunks
+func ParseAndStoreChunks(fileContent []byte, storageSpace storage.Store,
+	files *[]types.FileInfo, name string, hashFile string) {
+	var chunkList [][]byte
+	chunksHexs := strings.Split(string(fileContent), peer.MetafileSep)
+	for _, chunkHex := range chunksHexs {
+		c := storageSpace.Get(chunkHex)
+		if c == nil {
+			chunkList = append(chunkList, nil)
+		} else {
+			chunkList = append(chunkList, []byte(chunkHex))
+		}
+	}
+	*files = append(*files, types.FileInfo{
+		Name:     name,
+		Metahash: hashFile,
+		Chunks:   chunkList,
+	})
+}
+
 // shareSearch propagate the search and get listen of ID to listen for response is it's a source
 func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except []string, Src bool) ([]string, error) {
-	log.Info().Msgf("budget: %v", budget)
 	neighborsList := n.table.GetListNeighbors(except)
 	var listRequestID []string
 	var budgets []uint
@@ -492,19 +496,16 @@ func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except [
 	}
 	// distribute budget between neighbors
 	if budget <= nbNeighbors {
-		log.Info().Msgf("<=")
 		budgets = make([]uint, budget)
 		for i := range budgets {
 			budgets[i] = 1
 		}
 	} else {
-		log.Info().Msgf(">")
 		budgets = make([]uint, len(neighborsList))
 		budgetPerNeighbor := budget / nbNeighbors
 		if budget%nbNeighbors >= nbNeighbors-1 {
 			budgetPerNeighbor++
 		}
-		log.Info().Msgf("perNeighbors: %v", budgetPerNeighbor)
 		for numNeighbor := range neighborsList {
 			neighborBudget := budgetPerNeighbor
 			if numNeighbor == 0 {
@@ -521,10 +522,10 @@ func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except [
 	return listRequestID, nil
 }
 
+// DistributeSearch send the search message to neighbors with respective budget
 func (n *node) DistributeSearch(budgets []uint, msg types.SearchRequestMessage, Src bool,
 	listRequestID *[]string, neighbors []string) error {
 	for i, budget := range budgets {
-		log.Info().Msgf("send to %v with budget: %v", neighbors[i], budget)
 		msg.Budget = budget
 
 		if Src {

@@ -3,6 +3,7 @@ package impl
 import (
 	"github.com/rs/xid"
 	"go.dedis.ch/cs438/peer"
+	"go.dedis.ch/cs438/storage"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"io"
@@ -431,40 +432,51 @@ func (n *node) searchLocally(reg regexp.Regexp, WithEmpty bool) (files []types.F
 	n.conf.Storage.GetNamingStore().ForEach(
 		func(name string, hashFile []byte) bool {
 			if reg.Match([]byte(name)) {
-				fileContent := storageSpace.Get(string(hashFile))
-				if fileContent == nil {
-					if WithEmpty {
-						files = append(files, types.FileInfo{
-							Name:     name,
-							Metahash: string(fileContent),
-							Chunks:   nil,
-						})
-					} else {
-						return true
-					}
-
-				} else {
-					chunksHexs := strings.Split(string(fileContent), peer.MetafileSep)
-					var chunkList [][]byte
-					for _, chunkHex := range chunksHexs {
-						c := storageSpace.Get(chunkHex)
-						if c == nil {
-							chunkList = append(chunkList, nil)
-						} else {
-							chunkList = append(chunkList, []byte(chunkHex))
-						}
-					}
-					files = append(files, types.FileInfo{
-						Name:     name,
-						Metahash: string(hashFile),
-						Chunks:   chunkList,
-					})
+				file := types.FileInfo{Name: name, Metahash: string(hashFile)}
+				if parseAndStoreFile(file, WithEmpty, &files, storageSpace) {
+					return true
 				}
 			}
 			return true
 		},
 	)
 	return files
+}
+
+// parseAndStoreFile update files by adding FileInfo of the corresponding file
+func parseAndStoreFile(file types.FileInfo, WithEmpty bool, files *[]types.FileInfo, storageSpace storage.Store) bool {
+	name := file.Name
+	hashFile := file.Metahash
+	fileContent := storageSpace.Get(hashFile)
+	if fileContent == nil {
+		if WithEmpty {
+			*files = append(*files, types.FileInfo{
+				Name:     name,
+				Metahash: string(fileContent),
+				Chunks:   nil,
+			})
+		} else {
+			return true
+		}
+
+	} else {
+		chunksHexs := strings.Split(string(fileContent), peer.MetafileSep)
+		var chunkList [][]byte
+		for _, chunkHex := range chunksHexs {
+			c := storageSpace.Get(chunkHex)
+			if c == nil {
+				chunkList = append(chunkList, nil)
+			} else {
+				chunkList = append(chunkList, []byte(chunkHex))
+			}
+		}
+		*files = append(*files, types.FileInfo{
+			Name:     name,
+			Metahash: hashFile,
+			Chunks:   chunkList,
+		})
+	}
+	return false
 }
 
 // shareSearch propagate the search and get listen of ID to listen for response is it's a source

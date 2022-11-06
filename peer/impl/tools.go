@@ -1,12 +1,15 @@
 package impl
 
 import (
+	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"io"
 	"math/rand"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -92,6 +95,25 @@ func (sr *ConcurrentRouteTable) GetRandomNeighbors(except []string) (bool, strin
 	}
 	rdmNeighbor := neighborsExcept[rand.Int()%len(neighborsExcept)]
 	return true, rdmNeighbor
+}
+
+// GetListNeighbors return all neighbors of the peer in a random order
+func (sr *ConcurrentRouteTable) GetListNeighbors(except []string) (list []string) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	for _, neighbor := range sr.R {
+		remove := false
+		for _, e := range except {
+			if neighbor == e {
+				remove = true
+			}
+		}
+		if !remove {
+			list = append(list, neighbor)
+		}
+	}
+	rand.Shuffle(len(list), func(i, j int) { list[i], list[j] = list[j], list[i] })
+	return list
 }
 
 type RumorsManager struct {
@@ -190,7 +212,7 @@ func (an *Notification) Init() {
 func (an *Notification) requestNotif(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()
-	an.notif[pckID] = make(chan []byte)
+	an.notif[pckID] = make(chan []byte, 10000)
 }
 
 // waitNotif return a channel which is closed when ack has been received
@@ -211,9 +233,9 @@ func (an *Notification) signalNotif(pckID string) {
 // sendNotif signal by its corresponding channel that the pckID's Ack was received and its content
 func (an *Notification) sendNotif(pckID string, value []byte) {
 	an.mu.Lock()
-	defer an.signalNotif(pckID)
-	defer an.mu.Unlock()
-	an.notif[pckID] <- value
+	channel := an.notif[pckID]
+	an.mu.Unlock()
+	channel <- value
 }
 
 // ConcurrentCatalog define a safe way to access the Catalog.
@@ -249,9 +271,12 @@ func (c *ConcurrentCatalog) GetCatalog() peer.Catalog {
 func (c *ConcurrentCatalog) UpdateCatalog(key string, peer string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.catalog[key] == nil {
+	_, ok := c.catalog[key]
+	if !ok {
 		c.catalog[key] = make(map[string]struct{})
+		c.catalog[key] = c.catalog[key]
 	}
+
 	c.catalog[key][peer] = struct{}{}
 }
 
@@ -333,4 +358,114 @@ func SameStatus(m1 types.StatusMessage, m2 types.StatusMessage) bool {
 		}
 	}
 	return true
+}
+
+func (n *node) PropagateSearchAll(reg regexp.Regexp, budget uint, msg types.SearchRequestMessage, except []string) (err error) {
+	neighborsList := n.table.GetListNeighbors(except)
+	nbNeighbors := uint(len(neighborsList))
+	var listRequestID []string
+	if nbNeighbors == 0 {
+		log.Info().Msgf("no neighbors to propagate SearchAll")
+		return nil
+	}
+	if budget <= nbNeighbors {
+		for _, neighbor := range neighborsList[:budget] {
+			// send to neighbor the search with budget == 1
+			hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
+			msg.Budget = msg.Budget - 1
+			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+			if err != nil {
+				return err
+			}
+			pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
+			// send msg
+			n.waitAck.requestNotif(msg.RequestID)
+			listRequestID = append(listRequestID, msg.RequestID)
+			err = n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
+		}
+	} else {
+		budgetPerNeighbor := budget / nbNeighbors
+		if budget%nbNeighbors >= nbNeighbors-1 {
+			budgetPerNeighbor++
+		}
+		for numNeighbor, neighbor := range neighborsList {
+			neighborBudget := budgetPerNeighbor
+			if numNeighbor == 0 {
+				neighborBudget += budget - nbNeighbors*budgetPerNeighbor
+			}
+			// send to neighbor the search with budget neighborBudget
+			hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
+			msg.Budget = msg.Budget - 1
+			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+			if err != nil {
+				return err
+			}
+			pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
+			// send msg
+			n.waitAck.requestNotif(msg.RequestID)
+			listRequestID = append(listRequestID, msg.RequestID)
+			err = n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
+
+		}
+	}
+	return nil
+}
+
+func (n *node) searchLocally(reg regexp.Regexp, WithEmpty bool) (files []types.FileInfo) {
+	files = []types.FileInfo{}
+	storageSpace := n.conf.Storage.GetDataBlobStore()
+	n.conf.Storage.GetNamingStore().ForEach(
+		func(name string, hashFile []byte) bool {
+			if reg.Match([]byte(name)) {
+				fileContent := storageSpace.Get(string(hashFile))
+				if fileContent == nil {
+					if WithEmpty {
+						files = append(files, types.FileInfo{
+							Name:     name,
+							Metahash: string(fileContent),
+							Chunks:   nil,
+						})
+					} else {
+						return true
+					}
+
+				} else {
+					chunksHexs := strings.Split(string(fileContent), peer.MetafileSep)
+					var chunkList [][]byte
+					for _, chunkHex := range chunksHexs {
+						c := storageSpace.Get(chunkHex)
+						if c == nil {
+							chunkList = append(chunkList, nil)
+						} else {
+							chunkList = append(chunkList, []byte(chunkHex))
+						}
+					}
+					files = append(files, types.FileInfo{
+						Name:     name,
+						Metahash: string(hashFile),
+						Chunks:   chunkList,
+					})
+				}
+			}
+			return true
+		},
+	)
+	return files
+}
+
+func removeDuplicateValues(strSlice []string) []string {
+	var list []string
+	for _, val := range strSlice {
+		isPresent := false
+		for _, val2 := range list {
+			if val == val2 {
+				isPresent = true
+				break
+			}
+		}
+		if !isPresent {
+			list = append(list, val)
+		}
+	}
+	return list
 }

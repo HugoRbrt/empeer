@@ -12,6 +12,7 @@ import (
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +71,8 @@ func (n *node) Start() error {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.PrivateMessage{}, n.ExecPrivateMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.DataRequestMessage{}, n.ExecDataRequestMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.DataReplyMessage{}, n.ExecDataReplyMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.SearchReplyMessage{}, n.ExecSearchReplyMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.SearchRequestMessage{}, n.ExecSearchRequestMessage)
 
 	// we signal when the goroutine starts and when it ends
 	n.wg.Add(1)
@@ -163,7 +166,6 @@ func (n *node) ProcessMessage(pkt transport.Packet) error {
 			return err
 		}
 	} else {
-		log.Info().Msgf("msg not for us")
 		// no: relay the message to the next hop if it exists
 		header := transport.NewHeader(pkt.Header.Source, n.conf.Socket.GetAddress(), pkt.Header.Destination, 0)
 		packet := transport.Packet{Header: &header, Msg: pkt.Msg}
@@ -467,4 +469,94 @@ func (n *node) GetCatalog() peer.Catalog {
 // UpdateCatalog implement the peer.DataSharing
 func (n *node) UpdateCatalog(key string, peer string) {
 	n.catalog.UpdateCatalog(key, peer)
+}
+
+// SearchAll implement the peer.DataSharing
+func (n *node) SearchAll(reg regexp.Regexp, budget uint, timeout time.Duration) (names []string, err error) {
+	neighborsList := n.table.GetListNeighbors([]string{n.conf.Socket.GetAddress()})
+	nbNeighbors := uint(len(neighborsList))
+	names = []string{}
+	var listRequestID []string
+	// add locally matching filenames
+	localFiles := n.searchLocally(reg, true)
+	for _, localFile := range localFiles {
+		names = append(names, localFile.Name)
+	}
+	if nbNeighbors == 0 {
+		log.Info().Msgf("no neighbors to propagate SearchAll")
+		return names, nil
+	}
+	if budget <= nbNeighbors {
+		for _, neighbor := range neighborsList[:budget] {
+			// send to neighbor the search with budget == 1
+			hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
+			msg := types.SearchRequestMessage{RequestID: xid.New().String(), Origin: n.conf.Socket.GetAddress(), Pattern: reg.String(), Budget: 1}
+			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+			if err != nil {
+				return nil, err
+			}
+			pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
+			// send msg
+			n.waitAck.requestNotif(msg.RequestID)
+			listRequestID = append(listRequestID, msg.RequestID)
+			err = n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		budgetPerNeighbor := budget / nbNeighbors
+		if budget%nbNeighbors >= nbNeighbors-1 {
+			budgetPerNeighbor++
+		}
+		for numNeighbor, neighbor := range neighborsList {
+			neighborBudget := budgetPerNeighbor
+			if numNeighbor == 0 {
+				neighborBudget += budget - nbNeighbors*budgetPerNeighbor
+			}
+			// send to neighbor the search with budget neighborBudget
+			hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
+			msg := types.SearchRequestMessage{RequestID: xid.New().String(), Origin: n.conf.Socket.GetAddress(), Pattern: reg.String(), Budget: neighborBudget}
+			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+			if err != nil {
+				return nil, err
+			}
+			pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
+			// send msg
+			n.waitAck.requestNotif(msg.RequestID)
+			listRequestID = append(listRequestID, msg.RequestID)
+			err = n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	// wait timeout before gathering
+	select {
+	case <-n.ctx.Done():
+		return nil, nil
+	case <-time.After(timeout):
+	}
+	// gathering filenames
+	for _, id := range listRequestID {
+		channelIsClosed := false
+		for !channelIsClosed {
+			select {
+			case value := <-n.waitAck.waitNotif(id):
+				// the received value is "names"MetafileSep"new_id" provided by SearchRequestMessage handler
+				// new_id will be used to signal to the handler that the timeout is reached
+				// names is a list of name separated by MetafileSep
+				listValues := strings.Split(string(value), peer.MetafileSep)
+				n.waitAck.signalNotif(listValues[len(listValues)-1])
+				if len(listValues) > 1 && listValues[0] != "" {
+					names = append(names, listValues[:len(listValues)-1]...)
+				}
+			default:
+				n.waitAck.signalNotif(id)
+				channelIsClosed = true
+			}
+		}
+	}
+	names = removeDuplicateValues(names)
+	return names, nil
 }

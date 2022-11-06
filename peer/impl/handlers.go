@@ -1,11 +1,15 @@
 package impl
 
 import (
+	"github.com/rs/xid"
 	"github.com/rs/zerolog/log"
+	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
 	"math/rand"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -217,5 +221,99 @@ func (n *node) ExecDataReplyMessage(msg types.Message, pkt transport.Packet) err
 	_ = pkt
 	// stops the timer and send obtained value
 	n.waitAck.sendNotif(dataReplyMsg.RequestID, dataReplyMsg.Value)
+	n.waitAck.signalNotif(dataReplyMsg.RequestID)
+	return nil
+}
+
+func (n *node) ExecSearchRequestMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	searchRequestMsg, ok := msg.(*types.SearchRequestMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	budget := searchRequestMsg.Budget - 1
+	reg, err := regexp.Compile(searchRequestMsg.Pattern)
+	if err != nil {
+		return err
+	}
+	// forward search
+	if budget > 0 {
+		err = n.PropagateSearchAll(*reg, budget, *searchRequestMsg, []string{pkt.Header.Source, n.conf.Socket.GetAddress()})
+		if err != nil {
+			return err
+		}
+	}
+	// construct fileInfo
+	files := n.searchLocally(*reg, false)
+	// reply to the source
+	hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), searchRequestMsg.Origin, 0)
+	msgResponse := types.SearchReplyMessage{RequestID: searchRequestMsg.RequestID, Responses: files}
+	transMsg, err := n.conf.MessageRegistry.MarshalMessage(msgResponse)
+	if err != nil {
+		return err
+	}
+	pktResponse := transport.Packet{Header: &hdr, Msg: &transMsg}
+	err = n.conf.Socket.Send(pkt.Header.Source, pktResponse, time.Millisecond*1000)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (n *node) ExecSearchReplyMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	searchReplyMsg, ok := msg.(*types.SearchReplyMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	// stops the timer and send obtained value
+	newId := xid.New().String()
+	n.waitAck.requestNotif(newId)
+	var listNames []string
+	for _, f := range searchReplyMsg.Responses {
+		listNames = append(listNames, f.Name)
+	}
+	names := strings.Join(listNames, peer.MetafileSep)
+	response := []byte(names + peer.MetafileSep + newId)
+	n.waitAck.sendNotif(searchReplyMsg.RequestID, response)
+
+	// TODO: remove this waitNotif
+	/*
+		select {
+		case <-n.ctx.Done():
+			return nil
+		case <-n.waitAck.waitNotif(newId):
+			for _, f := range searchReplyMsg.Responses {
+				// update NamingStore
+				err := n.Tag(f.Name, f.Metahash)
+				if err != nil {
+					return err
+				}
+				n.UpdateCatalog(f.Metahash, pkt.Header.Source)
+				//update catalog
+				for _, chunk := range f.Chunks {
+					if chunk != nil {
+						n.UpdateCatalog(string(chunk), pkt.Header.Source)
+					}
+				}
+			}
+
+		}*/
+
+	for _, f := range searchReplyMsg.Responses {
+		// update NamingStore
+		err := n.Tag(f.Name, f.Metahash)
+		if err != nil {
+			return err
+		}
+		n.UpdateCatalog(f.Metahash, pkt.Header.Source)
+		//update catalog
+		for _, chunk := range f.Chunks {
+			if chunk != nil {
+				n.UpdateCatalog(string(chunk), pkt.Header.Source)
+			}
+		}
+	}
 	return nil
 }

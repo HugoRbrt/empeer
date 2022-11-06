@@ -313,18 +313,21 @@ func (n *node) Heartbeat() error {
 	if err != nil {
 		return err
 	}
+	err = n.Broadcast(transEmptyMsg)
+	if err != nil {
+		return err
+	}
 	for {
 		// check if Stop was called (and stop goroutine if so)
 		select {
 		case <-n.ctx.Done():
 			return nil
-		default:
+		case <-time.After(n.conf.HeartbeatInterval):
+			err = n.Broadcast(transEmptyMsg)
+			if err != nil {
+				return err
+			}
 		}
-		err = n.Broadcast(transEmptyMsg)
-		if err != nil {
-			return err
-		}
-		time.Sleep(n.conf.HeartbeatInterval)
 	}
 }
 
@@ -543,33 +546,42 @@ func (n *node) SearchFirst(pattern regexp.Regexp, conf peer.ExpandingRing) (name
 		case <-n.ctx.Done():
 			return "", nil
 		case <-time.After(conf.Timeout):
+			break
 		}
 		// gathering filenames
-		for _, id := range listRequestID {
-			channelIsClosed := false
-			for !channelIsClosed {
-				select {
-				case value := <-n.fileNotif.waitNotif(id):
-					for _, file := range value {
-						fullyKnown := true
-						for _, chunk := range file.Chunks {
-							if chunk == nil {
-								fullyKnown = false
-							}
-						}
-						if fullyKnown {
-							return file.Name, nil
-						}
-					}
-				default:
-					n.fileNotif.signalNotif(id)
-					channelIsClosed = true
-				}
-			}
+		fullyKnownFile := n.FullyKnownFile(listRequestID)
+		if fullyKnownFile != "" {
+			return fullyKnownFile, nil
 		}
 		//retry
 		nbRetry++
 		budget *= conf.Factor
 	}
 	return "", nil
+}
+
+func (n *node) FullyKnownFile(listID []string) string {
+	for _, id := range listID {
+		channelIsClosed := false
+		for !channelIsClosed {
+			select {
+			case value := <-n.fileNotif.waitNotif(id):
+				for _, file := range value {
+					fullyKnown := true
+					for _, chunk := range file.Chunks {
+						if chunk == nil {
+							fullyKnown = false
+						}
+					}
+					if fullyKnown {
+						return file.Name
+					}
+				}
+			default:
+				n.fileNotif.signalNotif(id)
+				channelIsClosed = true
+			}
+		}
+	}
+	return ""
 }

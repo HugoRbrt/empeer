@@ -114,7 +114,7 @@ func (sr *ConcurrentRouteTable) GetListNeighbors(except []string) (list []string
 		}
 	}
 	rand.Shuffle(len(list), func(i, j int) { list[i], list[j] = list[j], list[i] })
-	return list
+	return removeDuplicateValues(list)
 }
 
 type RumorsManager struct {
@@ -230,7 +230,6 @@ func (an *Notification) signalNotif(pckID string, value []byte) {
 	channel := an.notif[pckID]
 	an.mu.Unlock()
 	channel <- value
-	close(an.notif[pckID])
 }
 
 // FilesNotification notify files obtained after a search
@@ -273,8 +272,8 @@ func (fan *FilesNotification) signalNotif(pckID string) {
 func (fan *FilesNotification) sendNotif(pckID string, value []types.FileInfo) {
 	fan.mu.Lock()
 	channel := fan.notif[pckID]
-	fan.mu.Unlock()
 	channel <- value
+	fan.mu.Unlock()
 }
 
 // ConcurrentCatalog define a safe way to access the Catalog.

@@ -253,7 +253,6 @@ func (n *node) ExecSearchRequestMessage(msg types.Message, pkt transport.Packet)
 	if err != nil {
 		return err
 	}
-
 	return nil
 }
 

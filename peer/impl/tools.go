@@ -209,12 +209,11 @@ func (an *Notification) Init() {
 	an.notif = make(map[string]chan []byte)
 }
 
-// waitNotif request for an Ack with the ID pckID
+// requestNotif request for an Ack with the ID pckID
 func (an *Notification) requestNotif(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()
-	//TODO: modify this 1000
-	an.notif[pckID] = make(chan []byte, 10000)
+	an.notif[pckID] = make(chan []byte)
 }
 
 // waitNotif return a channel which is closed when ack has been received
@@ -225,19 +224,13 @@ func (an *Notification) waitNotif(pckID string) chan []byte {
 	return channel
 }
 
-// signalNotif signal by its corresponding channel that the pckID's Ack was received
-func (an *Notification) signalNotif(pckID string) {
-	an.mu.Lock()
-	defer an.mu.Unlock()
-	close(an.notif[pckID])
-}
-
-// sendNotif signal by its corresponding channel that the pckID's Ack was received and its content
-func (an *Notification) sendNotif(pckID string, value []byte) {
+// signalNotif signal by its corresponding channel that the pckID's Ack was received and its content
+func (an *Notification) signalNotif(pckID string, value []byte) {
 	an.mu.Lock()
 	channel := an.notif[pckID]
 	an.mu.Unlock()
 	channel <- value
+	close(an.notif[pckID])
 }
 
 // FilesNotification notify files obtained after a search
@@ -254,12 +247,11 @@ func (fan *FilesNotification) Init() {
 	fan.notif = make(map[string]chan []types.FileInfo)
 }
 
-// waitNotif request for a reply with id pckID
-func (fan *FilesNotification) requestNotif(pckID string) {
+// requestNotif request for a reply with id pckID
+func (fan *FilesNotification) requestNotif(pckID string, size uint) {
 	fan.mu.Lock()
 	defer fan.mu.Unlock()
-	//TODO: modify this 1000
-	fan.notif[pckID] = make(chan []types.FileInfo, 10000)
+	fan.notif[pckID] = make(chan []types.FileInfo, size)
 }
 
 // waitNotif return a channel which contained responses with pckID
@@ -482,7 +474,7 @@ func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except [
 			msg.Budget = 1
 			if isSource {
 				msg.RequestID = xid.New().String()
-				n.fileNotif.requestNotif(msg.RequestID)
+				n.fileNotif.requestNotif(msg.RequestID, budget)
 				listRequestID = append(listRequestID, msg.RequestID)
 			}
 			// send msg
@@ -502,7 +494,7 @@ func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except [
 			msg.Budget = neighborBudget
 			if isSource {
 				msg.RequestID = xid.New().String()
-				n.fileNotif.requestNotif(msg.RequestID)
+				n.fileNotif.requestNotif(msg.RequestID, budget)
 				listRequestID = append(listRequestID, msg.RequestID)
 			}
 			err = n.sendSearch(neighbor, msg)

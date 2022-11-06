@@ -150,7 +150,7 @@ func (n *node) ExecAckMessage(msg types.Message, pkt transport.Packet) error {
 	}
 
 	// stops the timer
-	n.waitAck.signalNotif(ackMsg.AckedPacketID)
+	n.waitAck.signalNotif(ackMsg.AckedPacketID, nil)
 
 	// process embeds message
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(ackMsg.Status)
@@ -217,8 +217,7 @@ func (n *node) ExecDataReplyMessage(msg types.Message, pkt transport.Packet) err
 	}
 	_ = pkt
 	// stops the timer and send obtained value
-	n.waitAck.sendNotif(dataReplyMsg.RequestID, dataReplyMsg.Value)
-	n.waitAck.signalNotif(dataReplyMsg.RequestID)
+	n.waitAck.signalNotif(dataReplyMsg.RequestID, dataReplyMsg.Value)
 	return nil
 }
 

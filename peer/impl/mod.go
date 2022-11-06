@@ -27,6 +27,7 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.table = ConcurrentRouteTable{R: make(map[string]string)}
 	node.rumors.Init()
 	node.waitAck.Init()
+	node.fileNotif.Init()
 	node.catalog.Init()
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
 	// create a new context which allows goroutine to know if Stop() is call
@@ -52,6 +53,8 @@ type node struct {
 	rumors RumorsManager
 	// chanel list that ackMessage uses to notify that corresponding packetID ack has been received
 	waitAck Notification
+	// chanel list that used to notify that corresponding packetID FileInfo has been received
+	fileNotif FilesNotification
 	// mutex controlling send/recv rumors msg
 	rumorMu sync.Mutex
 	// catalog defines where metahashes and chunks can be found
@@ -473,63 +476,17 @@ func (n *node) UpdateCatalog(key string, peer string) {
 
 // SearchAll implement the peer.DataSharing
 func (n *node) SearchAll(reg regexp.Regexp, budget uint, timeout time.Duration) (names []string, err error) {
-	neighborsList := n.table.GetListNeighbors([]string{n.conf.Socket.GetAddress()})
-	nbNeighbors := uint(len(neighborsList))
 	names = []string{}
-	var listRequestID []string
 	// add locally matching filenames
 	localFiles := n.searchLocally(reg, true)
 	for _, localFile := range localFiles {
 		names = append(names, localFile.Name)
 	}
-	if nbNeighbors == 0 {
-		log.Info().Msgf("no neighbors to propagate SearchAll")
-		return names, nil
-	}
-	if budget <= nbNeighbors {
-		for _, neighbor := range neighborsList[:budget] {
-			// send to neighbor the search with budget == 1
-			hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
-			msg := types.SearchRequestMessage{RequestID: xid.New().String(), Origin: n.conf.Socket.GetAddress(), Pattern: reg.String(), Budget: 1}
-			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
-			if err != nil {
-				return nil, err
-			}
-			pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
-			// send msg
-			n.waitAck.requestNotif(msg.RequestID)
-			listRequestID = append(listRequestID, msg.RequestID)
-			err = n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
-			if err != nil {
-				return nil, err
-			}
-		}
-	} else {
-		budgetPerNeighbor := budget / nbNeighbors
-		if budget%nbNeighbors >= nbNeighbors-1 {
-			budgetPerNeighbor++
-		}
-		for numNeighbor, neighbor := range neighborsList {
-			neighborBudget := budgetPerNeighbor
-			if numNeighbor == 0 {
-				neighborBudget += budget - nbNeighbors*budgetPerNeighbor
-			}
-			// send to neighbor the search with budget neighborBudget
-			hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
-			msg := types.SearchRequestMessage{RequestID: xid.New().String(), Origin: n.conf.Socket.GetAddress(), Pattern: reg.String(), Budget: neighborBudget}
-			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
-			if err != nil {
-				return nil, err
-			}
-			pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
-			// send msg
-			n.waitAck.requestNotif(msg.RequestID)
-			listRequestID = append(listRequestID, msg.RequestID)
-			err = n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
-			if err != nil {
-				return nil, err
-			}
-		}
+	// send request to neighbors
+	msg := types.SearchRequestMessage{Origin: n.conf.Socket.GetAddress(), Pattern: reg.String()}
+	err, listRequestID := n.shareSearch(budget, msg, []string{n.conf.Socket.GetAddress()}, true)
+	if err != nil {
+		return nil, err
 	}
 	// wait timeout before gathering
 	select {
@@ -542,21 +499,77 @@ func (n *node) SearchAll(reg regexp.Regexp, budget uint, timeout time.Duration) 
 		channelIsClosed := false
 		for !channelIsClosed {
 			select {
-			case value := <-n.waitAck.waitNotif(id):
-				// the received value is "names"MetafileSep"new_id" provided by SearchRequestMessage handler
-				// new_id will be used to signal to the handler that the timeout is reached
-				// names is a list of name separated by MetafileSep
-				listValues := strings.Split(string(value), peer.MetafileSep)
-				n.waitAck.signalNotif(listValues[len(listValues)-1])
-				if len(listValues) > 1 && listValues[0] != "" {
-					names = append(names, listValues[:len(listValues)-1]...)
+			case value := <-n.fileNotif.waitNotif(id):
+				for _, file := range value {
+					names = append(names, file.Name)
 				}
 			default:
-				n.waitAck.signalNotif(id)
+				n.fileNotif.signalNotif(id)
 				channelIsClosed = true
 			}
 		}
 	}
 	names = removeDuplicateValues(names)
 	return names, nil
+}
+
+// SearchFirst implement the peer.DataSharing
+func (n *node) SearchFirst(pattern regexp.Regexp, conf peer.ExpandingRing) (name string, err error) {
+	// Try locally
+	localFiles := n.searchLocally(pattern, false)
+	for _, file := range localFiles {
+		fullyKnown := true
+		for _, chunk := range file.Chunks {
+			if chunk == nil {
+				fullyKnown = false
+			}
+		}
+		if fullyKnown {
+			return file.Name, nil
+		}
+	}
+	// expanding ring algorithm:
+	var nbRetry uint = 0
+	budget := conf.Initial
+	for nbRetry < conf.Retry {
+		// send request
+		msg := types.SearchRequestMessage{Origin: n.conf.Socket.GetAddress(), Pattern: pattern.String()}
+		err, listRequestID := n.shareSearch(budget, msg, []string{n.conf.Socket.GetAddress()}, true)
+		if err != nil {
+			return "", err
+		}
+		// wait timeout
+		select {
+		case <-n.ctx.Done():
+			return "", nil
+		case <-time.After(conf.Timeout):
+		}
+		// gathering filenames
+		for _, id := range listRequestID {
+			channelIsClosed := false
+			for !channelIsClosed {
+				select {
+				case value := <-n.fileNotif.waitNotif(id):
+					for _, file := range value {
+						fullyKnown := true
+						for _, chunk := range file.Chunks {
+							if chunk == nil {
+								fullyKnown = false
+							}
+						}
+						if fullyKnown {
+							return file.Name, nil
+						}
+					}
+				default:
+					n.fileNotif.signalNotif(id)
+					channelIsClosed = true
+				}
+			}
+		}
+		//retry
+		nbRetry++
+		budget *= conf.Factor
+	}
+	return "", nil
 }

@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"github.com/rs/xid"
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/transport"
@@ -212,6 +213,7 @@ func (an *Notification) Init() {
 func (an *Notification) requestNotif(pckID string) {
 	an.mu.Lock()
 	defer an.mu.Unlock()
+	//TODO: modify this 1000
 	an.notif[pckID] = make(chan []byte, 10000)
 }
 
@@ -235,6 +237,51 @@ func (an *Notification) sendNotif(pckID string, value []byte) {
 	an.mu.Lock()
 	channel := an.notif[pckID]
 	an.mu.Unlock()
+	channel <- value
+}
+
+// FilesNotification notify files obtained after a search
+type FilesNotification struct {
+	// notif create for each PacketID which need an ack a channel for signaling if ack has been received or not
+	notif map[string]chan []types.FileInfo
+	mu    sync.RWMutex
+}
+
+// Init initialize FilesNotification
+func (fan *FilesNotification) Init() {
+	fan.mu.Lock()
+	defer fan.mu.Unlock()
+	fan.notif = make(map[string]chan []types.FileInfo)
+}
+
+// waitNotif request for a reply with id pckID
+func (fan *FilesNotification) requestNotif(pckID string) {
+	fan.mu.Lock()
+	defer fan.mu.Unlock()
+	//TODO: modify this 1000
+	fan.notif[pckID] = make(chan []types.FileInfo, 10000)
+}
+
+// waitNotif return a channel which contained responses with pckID
+func (fan *FilesNotification) waitNotif(pckID string) chan []types.FileInfo {
+	fan.mu.Lock()
+	defer fan.mu.Unlock()
+	channel := fan.notif[pckID]
+	return channel
+}
+
+// signalNotif close the corresponding request notification
+func (fan *FilesNotification) signalNotif(pckID string) {
+	fan.mu.Lock()
+	defer fan.mu.Unlock()
+	close(fan.notif[pckID])
+}
+
+// sendNotif signal by its corresponding channel that the pckID's Ack was received and its content
+func (fan *FilesNotification) sendNotif(pckID string, value []types.FileInfo) {
+	fan.mu.Lock()
+	channel := fan.notif[pckID]
+	fan.mu.Unlock()
 	channel <- value
 }
 
@@ -360,57 +407,25 @@ func SameStatus(m1 types.StatusMessage, m2 types.StatusMessage) bool {
 	return true
 }
 
-func (n *node) PropagateSearchAll(reg regexp.Regexp, budget uint, msg types.SearchRequestMessage, except []string) (err error) {
-	neighborsList := n.table.GetListNeighbors(except)
-	nbNeighbors := uint(len(neighborsList))
-	var listRequestID []string
-	if nbNeighbors == 0 {
-		log.Info().Msgf("no neighbors to propagate SearchAll")
-		return nil
-	}
-	if budget <= nbNeighbors {
-		for _, neighbor := range neighborsList[:budget] {
-			// send to neighbor the search with budget == 1
-			hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
-			msg.Budget = msg.Budget - 1
-			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
-			if err != nil {
-				return err
+// removeDuplicateValues return strSlice without duplicate values
+func removeDuplicateValues(strSlice []string) []string {
+	var list []string
+	for _, val := range strSlice {
+		isPresent := false
+		for _, val2 := range list {
+			if val == val2 {
+				isPresent = true
+				break
 			}
-			pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
-			// send msg
-			n.waitAck.requestNotif(msg.RequestID)
-			listRequestID = append(listRequestID, msg.RequestID)
-			err = n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
 		}
-	} else {
-		budgetPerNeighbor := budget / nbNeighbors
-		if budget%nbNeighbors >= nbNeighbors-1 {
-			budgetPerNeighbor++
-		}
-		for numNeighbor, neighbor := range neighborsList {
-			neighborBudget := budgetPerNeighbor
-			if numNeighbor == 0 {
-				neighborBudget += budget - nbNeighbors*budgetPerNeighbor
-			}
-			// send to neighbor the search with budget neighborBudget
-			hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
-			msg.Budget = msg.Budget - 1
-			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
-			if err != nil {
-				return err
-			}
-			pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
-			// send msg
-			n.waitAck.requestNotif(msg.RequestID)
-			listRequestID = append(listRequestID, msg.RequestID)
-			err = n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
-
+		if !isPresent {
+			list = append(list, val)
 		}
 	}
-	return nil
+	return list
 }
 
+// searchLocally return list of matching local files
 func (n *node) searchLocally(reg regexp.Regexp, WithEmpty bool) (files []types.FileInfo) {
 	files = []types.FileInfo{}
 	storageSpace := n.conf.Storage.GetDataBlobStore()
@@ -453,19 +468,57 @@ func (n *node) searchLocally(reg regexp.Regexp, WithEmpty bool) (files []types.F
 	return files
 }
 
-func removeDuplicateValues(strSlice []string) []string {
-	var list []string
-	for _, val := range strSlice {
-		isPresent := false
-		for _, val2 := range list {
-			if val == val2 {
-				isPresent = true
-				break
+// shareSearch propagate the search as source (if isSource) and get listen of ID to listen for response, or as relay (in this case, no ID returned)
+func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except []string, isSource bool) (err error, listRequestID []string) {
+	neighborsList := n.table.GetListNeighbors(except)
+	nbNeighbors := uint(len(neighborsList))
+	if nbNeighbors == 0 {
+		log.Info().Msgf("no neighbors to propagate SearchAll")
+		return err, nil
+	}
+	if budget <= nbNeighbors {
+		for _, neighbor := range neighborsList[:budget] {
+			// send to neighbor the search with budget == 1
+			msg.Budget = 1
+			if isSource {
+				msg.RequestID = xid.New().String()
+				n.fileNotif.requestNotif(msg.RequestID)
+				listRequestID = append(listRequestID, msg.RequestID)
 			}
+			// send msg
+			err = n.sendSearch(neighbor, msg)
 		}
-		if !isPresent {
-			list = append(list, val)
+	} else {
+		budgetPerNeighbor := budget / nbNeighbors
+		if budget%nbNeighbors >= nbNeighbors-1 {
+			budgetPerNeighbor++
+		}
+		for numNeighbor, neighbor := range neighborsList {
+			neighborBudget := budgetPerNeighbor
+			if numNeighbor == 0 {
+				neighborBudget += budget - nbNeighbors*budgetPerNeighbor
+			}
+			// send to neighbor the search with budget neighborBudget
+			msg.Budget = neighborBudget
+			if isSource {
+				msg.RequestID = xid.New().String()
+				n.fileNotif.requestNotif(msg.RequestID)
+				listRequestID = append(listRequestID, msg.RequestID)
+			}
+			err = n.sendSearch(neighbor, msg)
+
 		}
 	}
-	return list
+	return err, listRequestID
+}
+
+func (n *node) sendSearch(neighbor string, msg types.SearchRequestMessage) (err error) {
+	hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
+
+	transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+	if err != nil {
+		return err
+	}
+	pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
+	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
 }

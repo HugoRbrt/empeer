@@ -1,15 +1,12 @@
 package impl
 
 import (
-	"github.com/rs/xid"
 	"github.com/rs/zerolog/log"
-	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
 	"math/rand"
 	"regexp"
-	"strings"
 	"time"
 )
 
@@ -238,7 +235,7 @@ func (n *node) ExecSearchRequestMessage(msg types.Message, pkt transport.Packet)
 	}
 	// forward search
 	if budget > 0 {
-		err = n.PropagateSearchAll(*reg, budget, *searchRequestMsg, []string{pkt.Header.Source, n.conf.Socket.GetAddress()})
+		err, _ = n.shareSearch(budget, *searchRequestMsg, []string{pkt.Header.Source, n.conf.Socket.GetAddress()}, false)
 		if err != nil {
 			return err
 		}
@@ -268,39 +265,12 @@ func (n *node) ExecSearchReplyMessage(msg types.Message, pkt transport.Packet) e
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 	// stops the timer and send obtained value
-	newId := xid.New().String()
-	n.waitAck.requestNotif(newId)
 	var listNames []string
 	for _, f := range searchReplyMsg.Responses {
 		listNames = append(listNames, f.Name)
 	}
-	names := strings.Join(listNames, peer.MetafileSep)
-	response := []byte(names + peer.MetafileSep + newId)
-	n.waitAck.sendNotif(searchReplyMsg.RequestID, response)
-
-	// TODO: remove this waitNotif
-	/*
-		select {
-		case <-n.ctx.Done():
-			return nil
-		case <-n.waitAck.waitNotif(newId):
-			for _, f := range searchReplyMsg.Responses {
-				// update NamingStore
-				err := n.Tag(f.Name, f.Metahash)
-				if err != nil {
-					return err
-				}
-				n.UpdateCatalog(f.Metahash, pkt.Header.Source)
-				//update catalog
-				for _, chunk := range f.Chunks {
-					if chunk != nil {
-						n.UpdateCatalog(string(chunk), pkt.Header.Source)
-					}
-				}
-			}
-
-		}*/
-
+	n.fileNotif.sendNotif(searchReplyMsg.RequestID, searchReplyMsg.Responses)
+	// update catalog with responses
 	for _, f := range searchReplyMsg.Responses {
 		// update NamingStore
 		err := n.Tag(f.Name, f.Metahash)
@@ -309,11 +279,18 @@ func (n *node) ExecSearchReplyMessage(msg types.Message, pkt transport.Packet) e
 		}
 		n.UpdateCatalog(f.Metahash, pkt.Header.Source)
 		//update catalog
+		fullyKnow := true
 		for _, chunk := range f.Chunks {
 			if chunk != nil {
 				n.UpdateCatalog(string(chunk), pkt.Header.Source)
+			} else {
+				fullyKnow = false
 			}
 		}
+		if fullyKnow {
+
+		}
+		// if its a response to a searchFirst, and the file is fully known, prevent searchFirst
 	}
 	return nil
 }

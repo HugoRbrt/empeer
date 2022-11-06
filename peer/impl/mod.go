@@ -491,13 +491,12 @@ func (n *node) SearchAll(reg regexp.Regexp, budget uint, timeout time.Duration) 
 	if err != nil {
 		return nil, err
 	}
-	// wait timeout before gathering
+	// wait timeout and gather files
 	select {
 	case <-n.ctx.Done():
 		return nil, nil
 	case <-time.After(timeout):
 	}
-	// gathering filenames
 	for _, id := range listRequestID {
 		channelIsClosed := false
 		for !channelIsClosed {
@@ -541,14 +540,13 @@ func (n *node) SearchFirst(pattern regexp.Regexp, conf peer.ExpandingRing) (name
 		if err != nil {
 			return "", err
 		}
-		// wait timeout
+		// wait timeout and gather files
 		select {
 		case <-n.ctx.Done():
 			return "", nil
 		case <-time.After(conf.Timeout):
 			break
 		}
-		// gathering filenames
 		fullyKnownFile := n.FullyKnownFile(listRequestID)
 		if fullyKnownFile != "" {
 			return fullyKnownFile, nil

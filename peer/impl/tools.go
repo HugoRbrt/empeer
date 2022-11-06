@@ -527,7 +527,6 @@ func (n *node) DistributeSearch(budgets []uint, msg types.SearchRequestMessage, 
 	listRequestID *[]string, neighbors []string) error {
 	for i, budget := range budgets {
 		msg.Budget = budget
-
 		if Src {
 			msg.RequestID = xid.New().String()
 			n.fileNotif.requestNotif(msg.RequestID, budget)
@@ -548,9 +547,9 @@ func (n *node) DistributeSearch(budgets []uint, msg types.SearchRequestMessage, 
 	return nil
 }
 
-// FullyKnownFile return the firs file fully known by a peer, or "" if it doesn't exist
-func (n *node) FullyKnownFile(listID []string) string {
-	for _, id := range listID {
+// FullyKnownFile return the first file fully known (or "" if not) obtained by listening iin responsesId
+func (n *node) FullyKnownFile(responsesId []string) string {
+	for _, id := range responsesId {
 		channelIsClosed := false
 		for !channelIsClosed {
 			select {

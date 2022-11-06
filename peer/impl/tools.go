@@ -548,8 +548,8 @@ func (n *node) DistributeSearch(budgets []uint, msg types.SearchRequestMessage, 
 }
 
 // FullyKnownFile return the first file fully known (or "" if not) obtained by listening iin responsesId
-func (n *node) FullyKnownFile(responsesId []string) string {
-	for _, id := range responsesId {
+func (n *node) FullyKnownFile(responsesID []string) string {
+	for _, id := range responsesID {
 		channelIsClosed := false
 		for !channelIsClosed {
 			select {

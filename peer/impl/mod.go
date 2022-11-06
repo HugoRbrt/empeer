@@ -559,29 +559,3 @@ func (n *node) SearchFirst(pattern regexp.Regexp, conf peer.ExpandingRing) (name
 	}
 	return "", nil
 }
-
-func (n *node) FullyKnownFile(listID []string) string {
-	for _, id := range listID {
-		channelIsClosed := false
-		for !channelIsClosed {
-			select {
-			case value := <-n.fileNotif.waitNotif(id):
-				for _, file := range value {
-					fullyKnown := true
-					for _, chunk := range file.Chunks {
-						if chunk == nil {
-							fullyKnown = false
-						}
-					}
-					if fullyKnown {
-						return file.Name
-					}
-				}
-			default:
-				n.fileNotif.signalNotif(id)
-				channelIsClosed = true
-			}
-		}
-	}
-	return ""
-}

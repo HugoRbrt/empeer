@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+// ConcurrentRouteTable
+
 // ConcurrentRouteTable define a safe way to access the RoutingTable.
 type ConcurrentRouteTable struct {
 	R  peer.RoutingTable
@@ -117,6 +119,8 @@ func (sr *ConcurrentRouteTable) GetListNeighbors(except []string) (list []string
 	return removeDuplicateValues(list)
 }
 
+// RumorsManager
+
 type RumorsManager struct {
 	// map of all processed rumors from each peer
 	rumorsHistory map[string][]types.Rumor
@@ -195,6 +199,8 @@ func (pr *RumorsManager) GetSeq() uint {
 	return uint((*pr).sequence)
 }
 
+// Notification
+
 // Notification notify which ack has been received by whom
 type Notification struct {
 	// notif create for each PacketID which need an ack a channel for signaling if ack has been received or not
@@ -231,6 +237,8 @@ func (an *Notification) signalNotif(pckID string, value []byte) {
 	an.mu.Unlock()
 	channel <- value
 }
+
+// FilesNotification
 
 // FilesNotification notify files obtained after a search
 type FilesNotification struct {
@@ -275,6 +283,8 @@ func (fan *FilesNotification) sendNotif(pckID string, value []types.FileInfo) {
 	channel <- value
 	fan.mu.Unlock()
 }
+
+// ConcurrentCatalog
 
 // ConcurrentCatalog define a safe way to access the Catalog.
 type ConcurrentCatalog struct {
@@ -459,25 +469,29 @@ func (n *node) searchLocally(reg regexp.Regexp, WithEmpty bool) (files []types.F
 	return files
 }
 
-// shareSearch propagate the search as source (if isSource) and get listen of ID to listen for response, or as relay (in this case, no ID returned)
-func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except []string, isSource bool) (err error, listRequestID []string) {
+// shareSearch propagate the search and get listen of ID to listen for response is it's a source
+func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except []string, Src bool) (error, []string) {
 	neighborsList := n.table.GetListNeighbors(except)
+	var listRequestID []string
 	nbNeighbors := uint(len(neighborsList))
 	if nbNeighbors == 0 {
 		log.Info().Msgf("no neighbors to propagate SearchAll")
-		return err, nil
+		return nil, nil
 	}
 	if budget <= nbNeighbors {
 		for _, neighbor := range neighborsList[:budget] {
 			// send to neighbor the search with budget == 1
 			msg.Budget = 1
-			if isSource {
+			if Src {
 				msg.RequestID = xid.New().String()
 				n.fileNotif.requestNotif(msg.RequestID, budget)
 				listRequestID = append(listRequestID, msg.RequestID)
 			}
 			// send msg
-			err = n.sendSearch(neighbor, msg)
+			err := n.sendSearch(neighbor, msg)
+			if err != nil {
+				return err, nil
+			}
 		}
 	} else {
 		budgetPerNeighbor := budget / nbNeighbors
@@ -491,18 +505,21 @@ func (n *node) shareSearch(budget uint, msg types.SearchRequestMessage, except [
 			}
 			// send to neighbor the search with budget neighborBudget
 			msg.Budget = neighborBudget
-			if isSource {
+			if Src {
 				msg.RequestID = xid.New().String()
 				n.fileNotif.requestNotif(msg.RequestID, budget)
 				listRequestID = append(listRequestID, msg.RequestID)
 			}
-			err = n.sendSearch(neighbor, msg)
-
+			err := n.sendSearch(neighbor, msg)
+			if err != nil {
+				return err, nil
+			}
 		}
 	}
-	return err, listRequestID
+	return nil, listRequestID
 }
 
+// sendSearch send the search message to neighbor
 func (n *node) sendSearch(neighbor string, msg types.SearchRequestMessage) (err error) {
 	hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
 
@@ -512,4 +529,30 @@ func (n *node) sendSearch(neighbor string, msg types.SearchRequestMessage) (err 
 	}
 	pkt := transport.Packet{Header: &hdr, Msg: &transMsg}
 	return n.conf.Socket.Send(neighbor, pkt, time.Millisecond*1000)
+}
+
+func (n *node) FullyKnownFile(listID []string) string {
+	for _, id := range listID {
+		channelIsClosed := false
+		for !channelIsClosed {
+			select {
+			case value := <-n.fileNotif.waitNotif(id):
+				for _, file := range value {
+					fullyKnown := true
+					for _, chunk := range file.Chunks {
+						if chunk == nil {
+							fullyKnown = false
+						}
+					}
+					if fullyKnown {
+						return file.Name
+					}
+				}
+			default:
+				n.fileNotif.signalNotif(id)
+				channelIsClosed = true
+			}
+		}
+	}
+	return ""
 }

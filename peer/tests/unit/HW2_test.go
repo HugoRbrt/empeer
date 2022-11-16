@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"math/rand"
 	"regexp"
 	"strings"
 	"testing"
@@ -21,22 +22,32 @@ import (
 // Use the Upload() function and check if the storage is updated.
 func Test_HW2_Upload_Simple(t *testing.T) {
 	transp := channel.NewTransport()
+	chunkSize := uint(64*3 + 2) // The metafile can handle just 3 chunks
 
-	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithChunkSize(3), z.WithAutostart(false))
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithChunkSize(chunkSize), z.WithAutostart(false))
 	defer node1.Stop()
 
-	chunks := [][]byte{{'a', 'a', 'a'}, {'b', 'b', 'b'}, {'c'}}
-	data := append(chunks[0], append(chunks[1], chunks[2]...)...)
+	chunk1 := make([]byte, chunkSize)
+	chunk2 := make([]byte, chunkSize)
+	chunk3 := make([]byte, chunkSize/3)
+
+	chunk1[0] = 0xa
+	chunk2[0] = 0xb
+	chunk3[0] = 0xc
+
+	chunks := [][]byte{chunk1, chunk2, chunk3}
+
+	data := append(chunk1, append(chunk2, chunk3...)...)
 
 	// sha256 of each chunk, computed by hand
 	chunkHashes := []string{
-		"9834876dcfb05cb167a5c24953eba58c4ac89b1adf57f28f2f9d09af107ee8f0",
-		"3e744b9dc39389baf0c5a0660589b8402f3dbb49b89b3e75f2c9355852a3c677",
-		"2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6",
+		"d592091b73715b2bdb2c847154d58e95953684da6e48a64e21cc98c9aed547fd",
+		"13bf05f6c72dcf9f509e5b4cf2705d45e5fb9fb4210f54028e15af680b94b6fc",
+		"f66cb566864e46e968c4c34b1a1ceb2b3cf1d7f4ba6b74a990553dfc06d89a17",
 	}
 
 	// metahash, computed by hand
-	mh := "5a00fc30e073b095a6266136552a3da1d4622d0fdaa057f0b3135aa803321e1c"
+	mh := "6793fa03016bfdffddc2d5a2263d41a293a23b8b17b2192469a66b4edb35fd11"
 
 	buf := bytes.NewBuffer(data)
 
@@ -69,21 +80,29 @@ func Test_HW2_Upload_Simple(t *testing.T) {
 // Use the Upload() function with data multiple of the chunk size.
 func Test_HW2_Upload_Round(t *testing.T) {
 	transp := channel.NewTransport()
+	chunkSize := uint(64*3 + 2) // The metafile can handle just 3 chunks
 
-	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithChunkSize(3), z.WithAutostart(false))
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithChunkSize(chunkSize), z.WithAutostart(false))
 	defer node1.Stop()
 
-	chunks := [][]byte{{'a', 'a', 'a'}, {'b', 'b', 'b'}}
-	data := append(chunks[0], chunks[1]...)
+	chunk1 := make([]byte, chunkSize)
+	chunk2 := make([]byte, chunkSize)
+
+	chunk1[0] = 0xa
+	chunk2[0] = 0xb
+
+	chunks := [][]byte{chunk1, chunk2}
+
+	data := append(chunk1, chunk2...)
 
 	// sha256 of each chunk, computed by hand
 	chunkHashes := []string{
-		"9834876dcfb05cb167a5c24953eba58c4ac89b1adf57f28f2f9d09af107ee8f0",
-		"3e744b9dc39389baf0c5a0660589b8402f3dbb49b89b3e75f2c9355852a3c677",
+		"d592091b73715b2bdb2c847154d58e95953684da6e48a64e21cc98c9aed547fd",
+		"13bf05f6c72dcf9f509e5b4cf2705d45e5fb9fb4210f54028e15af680b94b6fc",
 	}
 
 	// metahash, computed by hand
-	mh := "6a0b1d67884e58786e97bc51544cbba4cc3e1279d8ff46da2fa32bcdb44a053e"
+	mh := "17183040d229805b0670f51d7500f421386c6cca67e74baef0764626fe8c3694"
 
 	buf := bytes.NewBuffer(data)
 
@@ -1226,7 +1245,7 @@ func Test_HW2_SearchFirst_Expanding(t *testing.T) {
 
 	n2outs := node2.GetOuts()
 
-	require.Len(t, n1outs, 2)
+	require.Len(t, n2outs, 2)
 
 	msg2 := z.GetSearchReply(t, n2outs[0].Msg)
 
@@ -1576,10 +1595,18 @@ func Test_HW2_SearchFirst_Remote_Expanding(t *testing.T) {
 // ▼       ▼   │
 // A ◄───► B ──┘
 func Test_HW2_Scenario(t *testing.T) {
+	rand.Seed(1)
+
+	getFile := func(size uint) []byte {
+		file := make([]byte, size)
+		_, err := rand.Read(file)
+		require.NoError(t, err)
+		return file
+	}
 
 	getTest := func(transp transport.Transport) func(*testing.T) {
 		return func(t *testing.T) {
-			chunkSize := uint(2)
+			chunkSize := uint(1024)
 
 			opts := []z.Option{
 				z.WithChunkSize(chunkSize),
@@ -1617,7 +1644,7 @@ func Test_HW2_Scenario(t *testing.T) {
 			// > If I upload a file on NodeB I should be able to download it
 			// from NodeB
 
-			fileB := []byte("lorem ipsum dolor sit amet")
+			fileB := getFile(chunkSize*2 + 10)
 			mhB, err := nodeB.Upload(bytes.NewBuffer(fileB))
 			require.NoError(t, err)
 
@@ -1659,7 +1686,7 @@ func Test_HW2_Scenario(t *testing.T) {
 			require.Equal(t, fileB, res)
 
 			// Add a file on node D
-			fileD := []byte("this is the file D")
+			fileD := getFile(chunkSize * 3)
 			mhD, err := nodeD.Upload(bytes.NewBuffer(fileD))
 			require.NoError(t, err)
 			nodeD.Tag("fileD", mhD)

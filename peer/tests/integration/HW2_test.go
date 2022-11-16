@@ -2,6 +2,8 @@ package integration
 
 import (
 	"bytes"
+	"fmt"
+	"math/rand"
 	"regexp"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	z "go.dedis.ch/cs438/internal/testing"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/registry/proxy"
+	"go.dedis.ch/cs438/transport"
 )
 
 // Integration test, with the following topology where * are reference nodes:
@@ -19,11 +22,65 @@ import (
 // │        │   │
 // ▼        ▼   │
 // A ◄────► B* ─┘
+//
+// We split the integration test into multiple, incremental steps, and gradually
+// run tests by adding a new step.
 func Test_HW2_Integration_Scenario(t *testing.T) {
+	stages := []stage{
+		setup,
+		uploadDownload,
+		tagAndSearch,
+		nodeCDownload,
+		nodeDDownload,
+		add2Nodes,
+		newNodesSearch,
+	}
+
+	t.Parallel()
+	for i := 1; i < len(stages); i++ {
+		t.Run(fmt.Sprintf("stage %d", i), func(t *testing.T) {
+			t.Parallel()
+
+			s := &state{t: t}
+			defer stop(s)
+
+			for k := 0; k < i; k++ {
+				stages[k](s)
+			}
+		})
+	}
+}
+
+// state holds all variables needed across stages.
+type state struct {
+	t          *testing.T
+	nodes      map[string]*z.TestNode
+	getFile    func(size uint) []byte
+	chunkSize  uint
+	metahashes map[string]string
+	files      map[string][]byte
+
+	referenceTransp transport.Transport
+	studentTransp   transport.Transport
+	studentOpts     []z.Option
+	refOpts         []z.Option
+}
+
+// stage represents a new step in the integration test
+type stage func(*state) *state
+
+// => Stage 1
+//
+// Setup the initial state, run the nodes.
+func setup(s *state) *state {
+	s.t.Log("~~ stage 1 <> setup ~~")
+
+	rand.Seed(1)
+
 	referenceTransp := proxyFac()
 	studentTransp := udpFac()
 
-	chunkSize := uint(2)
+	chunkSize := uint(2048)
 
 	studentOpts := []z.Option{
 		z.WithChunkSize(chunkSize),
@@ -33,19 +90,10 @@ func Test_HW2_Integration_Scenario(t *testing.T) {
 	}
 	refOpts := append(studentOpts, z.WithMessageRegistry(proxy.NewRegistry()))
 
-	nodeA := z.NewTestNode(t, studentFac, studentTransp, "127.0.0.1:0", studentOpts...)
-	nodeB := z.NewTestNode(t, referenceFac, referenceTransp, "127.0.0.1:0", refOpts...)
-	nodeC := z.NewTestNode(t, referenceFac, referenceTransp, "127.0.0.1:0", refOpts...)
-	nodeD := z.NewTestNode(t, studentFac, studentTransp, "127.0.0.1:0", studentOpts...)
-
-	defer func() {
-		nodeA.Stop()
-		nodeB.Stop()
-		nodeB.Peer.(z.Terminable).Terminate()
-		nodeC.Stop()
-		nodeC.Peer.(z.Terminable).Terminate()
-		nodeD.Stop()
-	}()
+	nodeA := z.NewTestNode(s.t, studentFac, studentTransp, "127.0.0.1:0", studentOpts...)
+	nodeB := z.NewTestNode(s.t, referenceFac, referenceTransp, "127.0.0.1:0", refOpts...)
+	nodeC := z.NewTestNode(s.t, referenceFac, referenceTransp, "127.0.0.1:0", refOpts...)
+	nodeD := z.NewTestNode(s.t, studentFac, studentTransp, "127.0.0.1:0", studentOpts...)
 
 	nodeA.AddPeer(nodeB.GetAddr())
 	nodeB.AddPeer(nodeA.GetAddr())
@@ -54,58 +102,119 @@ func Test_HW2_Integration_Scenario(t *testing.T) {
 	nodeC.AddPeer(nodeD.GetAddr())
 	nodeD.AddPeer(nodeB.GetAddr())
 
-	// Wait for the anti-entropy to take effect, i.e. everyone gets the
-	// heartbeat message from everyone else.
+	s.nodes = map[string]*z.TestNode{
+		"nodeA": &nodeA,
+		"nodeB": &nodeB,
+		"nodeC": &nodeC,
+		"nodeD": &nodeD,
+	}
+
+	s.getFile = func(size uint) []byte {
+		file := make([]byte, size)
+		_, err := rand.Read(file)
+		require.NoError(s.t, err)
+		return file
+	}
+
+	s.chunkSize = uint(2048)
+
+	s.files = make(map[string][]byte)
+	s.metahashes = make(map[string]string)
+
+	s.studentTransp = studentTransp
+	s.referenceTransp = referenceTransp
+	s.studentOpts = studentOpts
+	s.refOpts = refOpts
+
 	time.Sleep(time.Second * 10)
+
+	return s
+}
+
+// => Stage 2
+//
+// Upload a file on B and downloads it.
+func uploadDownload(s *state) *state {
+	s.t.Log("~~ stage 2 <> upload and download ~~")
 
 	// > If I upload a file on NodeB I should be able to download it from NodeB
 
-	fileB := []byte("lorem ipsum dolor sit amet")
-	mhB, err := nodeB.Upload(bytes.NewBuffer(fileB))
-	require.NoError(t, err)
+	fileB := s.getFile(s.chunkSize*3 + 123)
+	mhB, err := s.nodes["nodeB"].Upload(bytes.NewBuffer(fileB))
+	require.NoError(s.t, err)
 
-	res, err := nodeB.Download(mhB)
-	require.NoError(t, err)
-	require.Equal(t, fileB, res)
+	res, err := s.nodes["nodeB"].Download(mhB)
+	require.NoError(s.t, err)
+	require.Equal(s.t, fileB, res)
+
+	s.files["fileB"] = fileB
+	s.metahashes["mhB"] = mhB
+
+	return s
+}
+
+// => Stage 3
+//
+// Tag B's file and retrieve it from node A.
+func tagAndSearch(s *state) *state {
+	s.t.Log("~~ stage 3 <> tag and search ~~")
 
 	// Let's tag file on NodeB
-	nodeB.Tag("fileB", mhB)
+	s.nodes["nodeB"].Tag("fileB", s.metahashes["mhB"])
 
 	// > NodeA should be able to index file from B
-	names, err := nodeA.SearchAll(*regexp.MustCompile("file.*"), 3, time.Second*2)
-	require.NoError(t, err)
-	require.Len(t, names, 1)
-	require.Equal(t, "fileB", names[0])
+	names, err := s.nodes["nodeA"].SearchAll(*regexp.MustCompile("file.*"), 3, time.Second*2)
+	require.NoError(s.t, err)
+	require.Len(s.t, names, 1)
+	require.Equal(s.t, "fileB", names[0])
 
 	// > NodeA should have added "fileB" in its naming storage
-	mhB2 := nodeA.Resolve(names[0])
-	require.Equal(t, mhB, mhB2)
+	mhB2 := s.nodes["nodeA"].Resolve(names[0])
+	require.Equal(s.t, s.metahashes["mhB"], mhB2)
 
 	// > I should be able to download fileB from nodeA
-	res, err = nodeA.Download(mhB)
-	require.NoError(t, err)
-	require.Equal(t, fileB, res)
+	res, err := s.nodes["nodeA"].Download(s.metahashes["mhB"])
+	require.NoError(s.t, err)
+	require.Equal(s.t, s.files["fileB"], res)
+
+	return s
+}
+
+// => Stage 4
+//
+// Index and download B's file from C.
+func nodeCDownload(s *state) *state {
+	s.t.Log("~~ stage 4 <> nodeC download ~~")
 
 	// > NodeC should be able to index fileB from A
-	names, err = nodeC.SearchAll(*regexp.MustCompile("fileB"), 3, time.Second*4)
-	require.NoError(t, err)
-	require.Len(t, names, 1)
-	require.Equal(t, "fileB", names[0])
+	names, err := s.nodes["nodeC"].SearchAll(*regexp.MustCompile("fileB"), 3, time.Second*4)
+	require.NoError(s.t, err)
+	require.Len(s.t, names, 1)
+	require.Equal(s.t, "fileB", names[0])
 
 	// > NodeC should have added "fileB" in its naming storage
-	mhB2 = nodeC.Resolve(names[0])
-	require.Equal(t, mhB, mhB2)
+	mhB2 := s.nodes["nodeC"].Resolve(names[0])
+	require.Equal(s.t, s.metahashes["mhB"], mhB2)
 
 	// > I should be able to download fileB from nodeC
-	res, err = nodeC.Download(mhB)
-	require.NoError(t, err)
-	require.Equal(t, fileB, res)
+	res, err := s.nodes["nodeC"].Download(s.metahashes["mhB"])
+	require.NoError(s.t, err)
+	require.Equal(s.t, s.files["fileB"], res)
+
+	return s
+}
+
+// => Stage 5
+//
+// // Index and download B's file from D.
+func nodeDDownload(s *state) *state {
+	s.t.Log("~~ stage 5 <> nodeD download ~~")
 
 	// Add a file on node D
-	fileD := []byte("this is the file D")
-	mhD, err := nodeD.Upload(bytes.NewBuffer(fileD))
-	require.NoError(t, err)
-	nodeD.Tag("fileD", mhD)
+	fileD := s.getFile(s.chunkSize*3 - 123)
+	mhD, err := s.nodes["nodeD"].Upload(bytes.NewBuffer(fileD))
+	require.NoError(s.t, err)
+	s.nodes["nodeD"].Tag("fileD", mhD)
 
 	// > NodeA should be able to search for "fileD" using the expanding scheme
 	conf := peer.ExpandingRing{
@@ -114,17 +223,26 @@ func Test_HW2_Integration_Scenario(t *testing.T) {
 		Retry:   5,
 		Timeout: time.Second * 2,
 	}
-	name, err := nodeA.SearchFirst(*regexp.MustCompile("fileD"), conf)
-	require.NoError(t, err)
-	require.Equal(t, "fileD", name)
+	name, err := s.nodes["nodeA"].SearchFirst(*regexp.MustCompile("fileD"), conf)
+	require.NoError(s.t, err)
+	require.Equal(s.t, "fileD", name)
 
 	// > NodeA should be able to download fileD
-	mhD2 := nodeA.Resolve(name)
-	require.Equal(t, mhD, mhD2)
+	mhD2 := s.nodes["nodeA"].Resolve(name)
+	require.Equal(s.t, mhD, mhD2)
 
-	res, err = nodeA.Download(mhD2)
-	require.NoError(t, err)
-	require.Equal(t, fileD, res)
+	res, err := s.nodes["nodeA"].Download(mhD2)
+	require.NoError(s.t, err)
+	require.Equal(s.t, fileD, res)
+
+	return s
+}
+
+// => Stage 6
+//
+// Add two new nodes.
+func add2Nodes(s *state) *state {
+	s.t.Log("~~ stage 6 <> add 2 nodes ~~")
 
 	// Let's add new nodes and see if they can index the files and download them
 
@@ -135,38 +253,60 @@ func Test_HW2_Integration_Scenario(t *testing.T) {
 	//             ▼       ▼   │
 	//             A ◄───► B ◄─┘
 
-	nodeE := z.NewTestNode(t, studentFac, studentTransp, "127.0.0.1:0", studentOpts...)
-	nodeF := z.NewTestNode(t, referenceFac, referenceTransp, "127.0.0.1:0", refOpts...)
+	nodeE := z.NewTestNode(s.t, studentFac, s.studentTransp, "127.0.0.1:0", s.studentOpts...)
+	nodeF := z.NewTestNode(s.t, referenceFac, s.referenceTransp, "127.0.0.1:0", s.refOpts...)
 
-	defer func() {
-		nodeE.Stop()
-		nodeF.Stop()
-		nodeF.Peer.(z.Terminable).Terminate()
-	}()
+	s.nodes["nodeE"] = &nodeE
+	s.nodes["nodeF"] = &nodeF
 
-	nodeE.AddPeer(nodeC.GetAddr())
-	nodeF.AddPeer(nodeE.GetAddr())
+	nodeE.AddPeer(s.nodes["nodeC"].GetAddr())
+	nodeF.AddPeer(s.nodes["nodeE"].GetAddr())
 
-	// wait for the anti-entropy to take effect, i.e. everyone get the heartbeat
-	// messages sent by nodeE and nodeF.
 	time.Sleep(time.Second * 10)
+
+	return s
+}
+
+// => Stage 7
+//
+// Search files from the new nodes.
+func newNodesSearch(s *state) *state {
+	s.t.Log("~~ stage 7 <> new nodes search ~~")
 
 	// > NodeF should be able to index all files (2)
 
-	names, err = nodeF.SearchAll(*regexp.MustCompile(".*"), 8, time.Second*4)
-	require.NoError(t, err)
-	require.Len(t, names, 2)
-	require.Contains(t, names, "fileB")
-	require.Contains(t, names, "fileD")
+	names, err := s.nodes["nodeF"].SearchAll(*regexp.MustCompile(".*"), 8, time.Second*4)
+	require.NoError(s.t, err)
+	require.Len(s.t, names, 2)
+	require.Contains(s.t, names, "fileB")
+	require.Contains(s.t, names, "fileD")
 
 	// > NodeE should be able to search for fileB
-	conf = peer.ExpandingRing{
+	conf := peer.ExpandingRing{
 		Initial: 1,
 		Factor:  2,
 		Retry:   4,
 		Timeout: time.Second * 2,
 	}
-	name, err = nodeE.SearchFirst(*regexp.MustCompile("fileB"), conf)
-	require.NoError(t, err)
-	require.Equal(t, "fileB", name)
+	name, err := s.nodes["nodeE"].SearchFirst(*regexp.MustCompile("fileB"), conf)
+	require.NoError(s.t, err)
+	require.Equal(s.t, "fileB", name)
+
+	return s
+}
+
+// stop stops all nodes.
+func stop(s *state) *state {
+	s.t.Log("~~ stop ~~")
+
+	for _, node := range s.nodes {
+		n, ok := node.Peer.(z.Terminable)
+		if ok {
+			n.Terminate()
+		} else {
+			node.Stop()
+		}
+	}
+
+	return s
 }

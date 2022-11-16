@@ -943,7 +943,7 @@ func Test_HW1_Messaging_Broadcast_BigGraph(t *testing.T) {
 	require.Len(t, expected, len(nodes))
 
 	for i := 1; i < len(nodesChatMsgs); i++ {
-		compare := nodesChatMsgs[0]
+		compare := nodesChatMsgs[i]
 		sort.Sort(types.ChatByMessage(compare))
 
 		require.Equal(t, expected, compare)

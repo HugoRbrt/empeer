@@ -281,3 +281,53 @@ func (n *node) ExecSearchReplyMessage(msg types.Message, pkt transport.Packet) e
 	}
 	return nil
 }
+
+func (n *node) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	paxosPrepareMsg, ok := msg.(*types.PaxosPrepareMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	_ = paxosPrepareMsg
+	return nil
+}
+
+func (n *node) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	paxosPromiseMsg, ok := msg.(*types.PaxosPromiseMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	_ = paxosPromiseMsg
+	return nil
+}
+
+func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	paxosProposeMsg, ok := msg.(*types.PaxosProposeMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	_ = paxosProposeMsg
+	return nil
+}
+
+func (n *node) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	paxosAcceptMsg, ok := msg.(*types.PaxosAcceptMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	_ = paxosAcceptMsg
+	return nil
+}
+
+func (n *node) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	tlcMsg, ok := msg.(*types.TLCMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", msg)
+	}
+	_ = tlcMsg
+	return nil
+}

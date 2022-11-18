@@ -82,6 +82,7 @@ func (n *node) Start() error {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.DataRequestMessage{}, n.ExecDataRequestMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.DataReplyMessage{}, n.ExecDataReplyMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.SearchReplyMessage{}, n.ExecSearchReplyMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.SearchRequestMessage{}, n.ExecSearchRequestMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPrepareMessage{}, n.ExecPaxosPrepareMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPromiseMessage{}, n.ExecPaxosPromiseMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosProposeMessage{}, n.ExecPaxosProposeMessage)
@@ -255,7 +256,6 @@ func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Messag
 	for {
 		// pick a random neighbor
 		ok, neighbor := n.table.GetRandomNeighbors([]string{neighborAlreadyTry, n.conf.Socket.GetAddress()})
-		log.Info().Msgf("%s send to %s", n.conf.Socket.GetAddress(), neighbor)
 		if !ok {
 			// if no neighbor: send anything
 			return nil
@@ -268,7 +268,6 @@ func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Messag
 		//send RumorsMessage to a random neighbor
 		n.waitAck.requestNotif(pkToRelay.Header.PacketID)
 		err := n.conf.Socket.Send(neighbor, pkToRelay, time.Millisecond*1000)
-		log.Info().Msgf("broadcast send to neighbor")
 		if err != nil {
 			return err
 		}
@@ -469,17 +468,9 @@ func (n *node) DownloadChunk(name string) ([]byte, error) {
 
 // Tag implement the peer.DataSharing
 func (n *node) Tag(name string, mh string) error {
-	if n.conf.TotalPeers <= 1 {
-		// no need of Paxos/TLC/Blockchain
-		NamingStore := n.conf.Storage.GetNamingStore()
-		NamingStore.Set(name, []byte(mh))
-		return nil
-	}
-	// need of Paxos/TLC/Blockchain
-	//TODO: do paxos
-	err := n.p.ProposeConsensus(types.PaxosValue{UniqID: xid.New().String(), Filename: name, Metahash: mh})
-
-	return err
+	NamingStore := n.conf.Storage.GetNamingStore()
+	NamingStore.Set(name, []byte(mh))
+	return nil
 }
 
 // Resolve implement the peer.DataSharing

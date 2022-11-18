@@ -2,6 +2,7 @@ package impl
 
 import (
 	"github.com/rs/xid"
+	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/storage"
 	"go.dedis.ch/cs438/transport"
@@ -606,8 +607,8 @@ func (n *node) NewAcceptor() (a *Acceptor) {
 	}
 }
 
-// ExecPaxosPrepareMessage execute a received paxos prepare message
-func (a *Acceptor) ExecPaxosPrepareMessage(msg types.PaxosPrepareMessage) error {
+// ExecPrepare execute a received paxos prepare message
+func (a *Acceptor) ExecPrepare(msg types.PaxosPrepareMessage) error {
 	if msg.Step != a.step || msg.ID <= a.maxId {
 		return nil
 	}
@@ -625,16 +626,21 @@ func (a *Acceptor) ExecPaxosPrepareMessage(msg types.PaxosPrepareMessage) error 
 		return err
 	}
 	privMsg := types.PrivateMessage{Msg: &trPromiseMsg, Recipients: map[string]struct{}{msg.Source: {}}}
-	respMsg, err := a.conf.MessageRegistry.MarshalMessage(&privMsg)
+	respMsg, err := a.conf.MessageRegistry.MarshalMessage(privMsg)
 	if err != nil {
 		return err
 	}
-	err = a.Broadcast(respMsg)
-	return err
+	go func() {
+		err = a.Broadcast(respMsg)
+		if err != nil {
+			log.Error().Msgf("error to broadcast promise message")
+		}
+	}()
+	return nil
 }
 
-// ExecPaxosProposeMessage execute a received paxos propose message
-func (a *Acceptor) ExecPaxosProposeMessage(msg types.PaxosProposeMessage) error {
+// ExecPropose execute a received paxos propose message
+func (a *Acceptor) ExecPropose(msg types.PaxosProposeMessage) error {
 	if msg.Step != a.step || msg.ID != a.maxId {
 		return nil
 	}
@@ -651,4 +657,178 @@ func (a *Acceptor) ExecPaxosProposeMessage(msg types.PaxosProposeMessage) error 
 		return err
 	}
 	return a.Broadcast(trAcceptMsg)
+}
+
+// Proposer
+
+// Proposer define a node with the proposer role in Paxos
+type Proposer struct {
+	*node
+
+	step          uint
+	nbResponses   uint
+	id            uint
+	maxAcceptedId uint
+	acceptedValue *types.PaxosValue
+	phase         uint
+	mu            sync.Mutex
+}
+
+// NewProposer permit to create an acceptor role for the node
+func (n *node) NewProposer() (a *Proposer) {
+	return &Proposer{
+		node:          n,
+		step:          0,
+		nbResponses:   0,
+		maxAcceptedId: 0,
+		acceptedValue: nil,
+		phase:         1,
+		id:            n.conf.PaxosID,
+	}
+}
+
+func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) error {
+	for {
+		// begin phase 1
+		err := p.SendPrepare()
+		if err != nil {
+			return err
+		}
+		select {
+		case <-p.ctx.Done():
+			return nil
+		default:
+		}
+		//begin Phase 2
+		v := &proposedValue
+		p.mu.Lock()
+		if p.acceptedValue != nil {
+			v = p.acceptedValue
+		}
+		p.mu.Unlock()
+		result, err := p.SendPropose(v)
+		if err != nil {
+			return err
+		}
+		if result {
+			return nil
+		}
+		// prepare message to retry sending Prepare message
+		p.mu.Lock()
+		p.id += p.conf.TotalPeers
+		p.mu.Unlock()
+	}
+}
+
+// SendPrepare send Paxos Prepare message, and return if Proposer received enough Promises
+func (p *Proposer) SendPrepare() error {
+	p.mu.Lock()
+	p.phase = 1
+	// Send prepare message while we don't have a majority of promises
+	for {
+		// create Prepare Msg
+		prepareMsg := types.PaxosPrepareMessage{
+			Step:   0,
+			ID:     p.id,
+			Source: p.conf.Socket.GetAddress(),
+		}
+		p.mu.Unlock()
+		msg, err := p.conf.MessageRegistry.MarshalMessage(prepareMsg)
+		if err != nil {
+			return err
+		}
+		p.nbResponses = 0
+		err = p.Broadcast(msg)
+		if err != nil {
+			return err
+		}
+		//observe if promises response represent a majority
+		timeout := false
+		for !timeout {
+			p.mu.Lock()
+			if int(p.nbResponses) >= p.conf.PaxosThreshold(p.conf.TotalPeers) {
+				// go to next phase
+				p.mu.Unlock()
+				return nil
+			}
+			p.mu.Unlock()
+			select {
+			case <-p.ctx.Done():
+				return nil
+			case <-time.After(p.conf.PaxosProposerRetry):
+				// Retry SendPrepare
+				timeout = true
+			default:
+			}
+		}
+		p.mu.Lock()
+		// prepare message to retry sending Prepare message
+		p.id += p.conf.TotalPeers
+	}
+}
+
+// SendPropose send Paxos Prepare message, and return if Proposer received enough Promises
+func (p *Proposer) SendPropose(value *types.PaxosValue) (bool, error) {
+	p.mu.Lock()
+	p.phase = 2
+	p.nbResponses = 0
+	// create Propose Msg
+	proposeMsg := types.PaxosProposeMessage{
+		Step:  0,
+		ID:    p.id,
+		Value: *value,
+	}
+	p.mu.Unlock()
+	// Send propose message while we don't have a majority of accept
+	msg, err := p.conf.MessageRegistry.MarshalMessage(proposeMsg)
+	if err != nil {
+		return false, err
+	}
+	err = p.Broadcast(msg)
+	if err != nil {
+		return false, err
+	}
+	//observe if accept responses represent a majority
+	for {
+		p.mu.Lock()
+		if int(p.nbResponses) >= p.conf.PaxosThreshold(p.conf.TotalPeers) {
+			// go to next phase
+			p.mu.Unlock()
+			return true, nil
+		}
+		p.mu.Unlock()
+		select {
+		case <-p.ctx.Done():
+			return false, nil
+		case <-time.After(p.conf.PaxosProposerRetry):
+			// Retry SendPrepare
+			return false, nil
+		default:
+		}
+	}
+}
+
+// ExecPromise execute a received paxos promise message
+func (p *Proposer) ExecPromise(msg types.PaxosPromiseMessage) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if msg.Step != p.step || p.phase != 1 {
+		return nil
+	}
+	p.nbResponses++
+	if msg.AcceptedID > p.maxAcceptedId {
+		p.maxAcceptedId = msg.AcceptedID
+		p.acceptedValue = msg.AcceptedValue
+	}
+	return nil
+}
+
+// ExecAccept execute a received paxos accept message
+func (p *Proposer) ExecAccept(msg types.PaxosPromiseMessage) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if msg.Step == p.step && p.phase == 2 {
+		p.nbResponses++
+	}
+	return nil
 }

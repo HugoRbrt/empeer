@@ -30,6 +30,7 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.fileNotif.Init()
 	node.catalog.Init()
 	node.a = node.NewAcceptor()
+	node.p = node.NewProposer()
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
 	// create a new context which allows goroutine to know if Stop() is call
 	node.ctx, node.cancel = context.WithCancel(context.Background())
@@ -64,6 +65,7 @@ type node struct {
 	// Consensus attributes
 	// acceptor role
 	a *Acceptor
+	p *Proposer
 }
 
 // HOMEWORK 0
@@ -253,6 +255,7 @@ func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Messag
 	for {
 		// pick a random neighbor
 		ok, neighbor := n.table.GetRandomNeighbors([]string{neighborAlreadyTry, n.conf.Socket.GetAddress()})
+		log.Info().Msgf("%s send to %s", n.conf.Socket.GetAddress(), neighbor)
 		if !ok {
 			// if no neighbor: send anything
 			return nil
@@ -265,6 +268,7 @@ func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Messag
 		//send RumorsMessage to a random neighbor
 		n.waitAck.requestNotif(pkToRelay.Header.PacketID)
 		err := n.conf.Socket.Send(neighbor, pkToRelay, time.Millisecond*1000)
+		log.Info().Msgf("broadcast send to neighbor")
 		if err != nil {
 			return err
 		}
@@ -469,11 +473,13 @@ func (n *node) Tag(name string, mh string) error {
 		// no need of Paxos/TLC/Blockchain
 		NamingStore := n.conf.Storage.GetNamingStore()
 		NamingStore.Set(name, []byte(mh))
-	} else {
-		// need of Paxos/TLC/Blockchain
-		//TODO: do paxos
+		return nil
 	}
-	return nil
+	// need of Paxos/TLC/Blockchain
+	//TODO: do paxos
+	err := n.p.ProposeConsensus(types.PaxosValue{UniqID: xid.New().String(), Filename: name, Metahash: mh})
+
+	return err
 }
 
 // Resolve implement the peer.DataSharing

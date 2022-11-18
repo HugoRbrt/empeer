@@ -165,6 +165,7 @@ func (n *node) ExecAckMessage(msg types.Message, pkt transport.Packet) error {
 }
 
 func (n *node) ExecPrivateMessage(msg types.Message, pkt transport.Packet) error {
+	log.Info().Msgf("%s: privateMsg received by %s", n.conf.Socket.GetAddress(), pkt.Header.Source)
 	// cast the message to its actual type. You assume it is the right type.
 	privMsg, ok := msg.(*types.PrivateMessage)
 	if !ok {
@@ -283,23 +284,25 @@ func (n *node) ExecSearchReplyMessage(msg types.Message, pkt transport.Packet) e
 }
 
 func (n *node) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Packet) error {
+	log.Info().Msgf("%s: ExecPaxosPrepareMessage received by %s", n.conf.Socket.GetAddress(), pkt.Header.Source)
 	// cast the message to its actual type. You assume it is the right type.
 	paxosPrepareMsg, ok := msg.(*types.PaxosPrepareMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	err := n.a.ExecPaxosPrepareMessage(*paxosPrepareMsg)
+	err := n.a.ExecPrepare(*paxosPrepareMsg)
 	return err
 }
 
 func (n *node) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Packet) error {
+	log.Info().Msgf("%s: ExecPaxosPrepareMessage received by %s", n.conf.Socket.GetAddress(), pkt.Header.Source)
 	// cast the message to its actual type. You assume it is the right type.
 	paxosPromiseMsg, ok := msg.(*types.PaxosPromiseMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	_ = paxosPromiseMsg
-	return nil
+	err := n.p.ExecPromise(*paxosPromiseMsg)
+	return err
 }
 
 func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) error {
@@ -308,7 +311,7 @@ func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) 
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	err := n.a.ExecPaxosProposeMessage(*paxosProposeMsg)
+	err := n.a.ExecPropose(*paxosProposeMsg)
 	return err
 }
 

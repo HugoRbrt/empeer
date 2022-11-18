@@ -582,3 +582,73 @@ func ContainFullyKnown(files []types.FileInfo) string {
 	}
 	return ""
 }
+
+// Acceptor
+
+// Acceptor define a node with the acceptor role in Paxos
+type Acceptor struct {
+	*node
+
+	maxId         uint
+	step          uint
+	acceptedID    uint
+	acceptedValue *types.PaxosValue
+}
+
+// NewAcceptor permit to create an acceptor role for the node
+func (n *node) NewAcceptor() (a *Acceptor) {
+	return &Acceptor{
+		node:          n,
+		maxId:         0,
+		step:          0,
+		acceptedValue: nil,
+		acceptedID:    0,
+	}
+}
+
+// ExecPaxosPrepareMessage execute a received paxos prepare message
+func (a *Acceptor) ExecPaxosPrepareMessage(msg types.PaxosPrepareMessage) error {
+	if msg.Step != a.step || msg.ID <= a.maxId {
+		return nil
+	}
+
+	// PROMISE response
+	a.maxId = msg.ID
+	promiseMsg := types.PaxosPromiseMessage{
+		Step:          msg.Step,
+		ID:            msg.ID,
+		AcceptedID:    a.acceptedID,
+		AcceptedValue: a.acceptedValue,
+	}
+	trPromiseMsg, err := a.conf.MessageRegistry.MarshalMessage(&promiseMsg)
+	if err != nil {
+		return err
+	}
+	privMsg := types.PrivateMessage{Msg: &trPromiseMsg, Recipients: map[string]struct{}{msg.Source: {}}}
+	respMsg, err := a.conf.MessageRegistry.MarshalMessage(&privMsg)
+	if err != nil {
+		return err
+	}
+	err = a.Broadcast(respMsg)
+	return err
+}
+
+// ExecPaxosProposeMessage execute a received paxos propose message
+func (a *Acceptor) ExecPaxosProposeMessage(msg types.PaxosProposeMessage) error {
+	if msg.Step != a.step || msg.ID != a.maxId {
+		return nil
+	}
+	// ACCEPT response
+	a.acceptedID = msg.ID
+	a.acceptedValue = &msg.Value
+	acceptMsg := types.PaxosAcceptMessage{
+		Step:  msg.Step,
+		ID:    msg.ID,
+		Value: msg.Value,
+	}
+	trAcceptMsg, err := a.conf.MessageRegistry.MarshalMessage(acceptMsg)
+	if err != nil {
+		return err
+	}
+	return a.Broadcast(trAcceptMsg)
+}

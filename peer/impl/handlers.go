@@ -288,8 +288,8 @@ func (n *node) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Packet) 
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	_ = paxosPrepareMsg
-	return nil
+	err := n.a.ExecPaxosPrepareMessage(*paxosPrepareMsg)
+	return err
 }
 
 func (n *node) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Packet) error {
@@ -308,8 +308,8 @@ func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) 
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	_ = paxosProposeMsg
-	return nil
+	err := n.a.ExecPaxosProposeMessage(*paxosProposeMsg)
+	return err
 }
 
 func (n *node) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) error {

@@ -29,6 +29,7 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.waitAck.Init()
 	node.fileNotif.Init()
 	node.catalog.Init()
+	node.a = node.NewAcceptor()
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
 	// create a new context which allows goroutine to know if Stop() is call
 	node.ctx, node.cancel = context.WithCancel(context.Background())
@@ -59,6 +60,10 @@ type node struct {
 	rumorMu sync.Mutex
 	// catalog defines where metahashes and chunks can be found
 	catalog ConcurrentCatalog
+
+	// Consensus attributes
+	// acceptor role
+	a *Acceptor
 }
 
 // HOMEWORK 0
@@ -460,8 +465,14 @@ func (n *node) DownloadChunk(name string) ([]byte, error) {
 
 // Tag implement the peer.DataSharing
 func (n *node) Tag(name string, mh string) error {
-	NamingStore := n.conf.Storage.GetNamingStore()
-	NamingStore.Set(name, []byte(mh))
+	if n.conf.TotalPeers <= 1 {
+		// no need of Paxos/TLC/Blockchain
+		NamingStore := n.conf.Storage.GetNamingStore()
+		NamingStore.Set(name, []byte(mh))
+	} else {
+		// need of Paxos/TLC/Blockchain
+		//TODO: do paxos
+	}
 	return nil
 }
 

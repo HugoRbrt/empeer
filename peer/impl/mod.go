@@ -82,9 +82,9 @@ func (n *node) Start() error {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.SearchReplyMessage{}, n.ExecSearchReplyMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.SearchRequestMessage{}, n.ExecSearchRequestMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPrepareMessage{}, n.tlc.a.ExecPaxosPrepareMessage)
-	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPromiseMessage{}, n.tlc.p.ExecPaxosPromiseMessage)
-	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosProposeMessage{}, n.tlc.a.ExecPaxosProposeMessage)
-	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosAcceptMessage{}, n.tlc.p.ExecPaxosAcceptMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPromiseMessage{}, n.ExecPaxosPromiseMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosProposeMessage{}, n.ExecPaxosProposeMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosAcceptMessage{}, n.ExecPaxosAcceptMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.TLCMessage{}, n.tlc.ExecTLCMessage)
 
 	// we signal when the goroutine starts and when it ends
@@ -212,6 +212,7 @@ func (n *node) Broadcast(msg transport.Message) error {
 		Sequence: n.rumors.GetSeq(),
 		Msg:      &msg,
 	}
+	n.rumors.IncSeq()
 	rumors := types.RumorsMessage{
 		Rumors: []types.Rumor{
 			rumor,
@@ -257,9 +258,6 @@ func (n *node) TryBroadcast(neighborAlreadyTry string, transMsg transport.Messag
 		if !ok {
 			// if no neighbor: send anything
 			return nil
-		}
-		if neighborAlreadyTry == "" { // only if the broadcast is sent for the first time
-			n.rumors.IncSeq()
 		}
 		hdrRelay := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), neighbor, 0)
 		pkToRelay := transport.Packet{Header: &hdrRelay, Msg: &transMsg}

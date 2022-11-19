@@ -121,7 +121,7 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 		}
 		return nil
 	}
-	iDontHave := CompareView(n.rumors.GetView(), *statusMsg)
+	iDontHave := n.CompareView(n.rumors.GetView(), *statusMsg)
 	if len(iDontHave) > 0 {
 		// has Rumors that the remote peer doesn't have.
 		// then send a status message to the remote peer
@@ -130,7 +130,7 @@ func (n *node) ExecStatusMessage(msg types.Message, pkt transport.Packet) error 
 			return err
 		}
 	}
-	itDoesntHave := CompareView(*statusMsg, n.rumors.GetView())
+	itDoesntHave := n.CompareView(*statusMsg, n.rumors.GetView())
 	if len(itDoesntHave) > 0 {
 		// remote peer has Rumors that the peer doesn't have
 		// then sent rumors that remote peer doesn't have (in order of increasing sequence number)
@@ -319,7 +319,9 @@ func (a *Acceptor) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Pack
 	return nil
 }
 
-func (p *Proposer) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Packet) error {
+func (n *node) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Packet) error {
+	log.Info().Msgf("%v: received PROMISE", n.conf.Socket.GetAddress())
+	p := n.tlc.p
 	// cast the message to its actual type. You assume it is the right type.
 	paxosPromiseMsg, ok := msg.(*types.PaxosPromiseMessage)
 	if !ok {
@@ -338,7 +340,9 @@ func (p *Proposer) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Pack
 	return nil
 }
 
-func (a *Acceptor) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) error {
+func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) error {
+	a := n.tlc.a
+	log.Info().Msgf("%v: received PROPOSE", a.conf.Socket.GetAddress())
 	// cast the message to its actual type. You assume it is the right type.
 	paxosProposeMsg, ok := msg.(*types.PaxosProposeMessage)
 	if !ok {
@@ -359,34 +363,60 @@ func (a *Acceptor) ExecPaxosProposeMessage(msg types.Message, pkt transport.Pack
 	if err != nil {
 		return err
 	}
-	return a.Broadcast(trAcceptMsg)
+	go func() {
+		err = a.Broadcast(trAcceptMsg)
+		if err != nil {
+			log.Error().Msgf("error to broadcast promise message")
+		}
+	}()
+	return nil
 }
 
-func (p *Proposer) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) error {
+func (n *node) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) error {
+	p := n.tlc.p
+	log.Info().Msgf("%v: received ACCEPT", p.conf.Socket.GetAddress())
 	// cast the message to its actual type. You assume it is the right type.
 	paxosAcceptMsg, ok := msg.(*types.PaxosAcceptMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if paxosAcceptMsg.Step == p.step && p.phase == 2 {
+	if paxosAcceptMsg.Step == p.step {
 		p.nbResponses++
+		if &paxosAcceptMsg.Value != nil {
+			p.acceptedValue = &paxosAcceptMsg.Value
+		}
+	}
+	if int(p.nbResponses) >= p.conf.PaxosThreshold(p.conf.TotalPeers) {
+		// consensus is reached!
+		log.Info().Msgf("%v: consensus reached", n.conf.Socket.GetAddress())
+		v := p.proposedValue
+		if p.acceptedValue != nil {
+			v = p.acceptedValue
+		}
+		p.mu.Unlock()
+		block, err := n.tlc.NewBlock(v)
+		if err != nil {
+			return err
+		}
+		go n.tlc.SendTLC(block)
+	} else {
+		log.Info().Msgf("%v: consensus not reached %v<%v", n.conf.Socket.GetAddress(), int(p.nbResponses), p.conf.PaxosThreshold(p.conf.TotalPeers))
+		p.mu.Unlock()
 	}
 	return nil
 }
 
 func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
-	tlc.mu.Lock()
-	defer tlc.mu.Unlock()
+	log.Info().Msgf("%v: received TLC", tlc.conf.Socket.GetAddress())
 	// cast the message to its actual type. You assume it is the right type.
 	tlcMsg, ok := msg.(*types.TLCMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", tlcMsg)
 	}
-	log.Info().Msgf("%v: step: %v", tlc.conf.Socket.GetAddress(), tlcMsg.Step)
-	log.Info().Msgf("%v: current step: %v", tlc.conf.Socket.GetAddress(), tlc.step)
+	tlc.mu.Lock()
 	if tlcMsg.Step < tlc.step {
+		tlc.mu.Unlock()
 		return nil
 	}
 	// store the message for corresponding step
@@ -401,16 +431,17 @@ func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
 		tlc.Resp[tlcMsg.Step] = v
 		log.Error().Msgf("exist store value: %v for step %v", tlcMsg.Block.Hash, tlcMsg.Step)
 		if !bytes.Equal(v.value.Hash, tlcMsg.Block.Hash) {
-			log.Error().Msgf("not the same block for the same tlc step: %v != %v for step %v", v.value.Hash, tlcMsg.Block.Hash, tlcMsg.Step)
+			tlc.mu.Unlock()
+			return xerrors.Errorf("not the same block for the same tlc step: %v != %v for step %v", v.value.Hash, tlcMsg.Block.Hash, tlcMsg.Step)
 		}
 	}
 	// the rest of the work is done on our current step
 	vCurr, existCurr := tlc.Resp[tlc.step]
+	tlc.mu.Unlock()
 	if !existCurr {
 		log.Error().Msgf("doesn't exit for step %v", tlc.step)
 		return nil
 	}
-	log.Info().Msgf("v.nb: %v/%v at step %v", vCurr.nb, tlc.conf.PaxosThreshold(tlc.conf.TotalPeers), tlcMsg.Step)
 	if int(vCurr.nb) >= tlc.conf.PaxosThreshold(tlc.conf.TotalPeers) {
 		// step 1&2
 		err := tlc.AddBlock(vCurr.value)
@@ -431,11 +462,12 @@ func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
 	}
 	//step 5
 	for {
+		tlc.mu.Lock()
 		v, exist := tlc.Resp[tlc.step]
+		tlc.mu.Unlock()
 		if !exist {
 			return nil
 		}
-		log.Info().Msgf("step %v, value: %v", tlc.step, int(v.nb))
 		if int(v.nb) >= tlc.conf.PaxosThreshold(tlc.conf.TotalPeers) {
 			// step 1&2
 			err := tlc.AddBlock(v.value)
@@ -445,7 +477,6 @@ func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
 			// step 4
 			tlc.NextStep()
 		} else {
-			log.Info().Msgf("stop at step %v", tlc.step)
 			return nil
 		}
 	}

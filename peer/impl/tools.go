@@ -180,7 +180,7 @@ func (pr *RumorsManager) GetRumorsFrom(src string) []types.Rumor {
 }
 
 // CompareView returns a list of addresses where 'me' has not received the latest rumor that 'other' has
-func CompareView(me map[string]uint, other map[string]uint) []string {
+func (n *node) CompareView(me map[string]uint, other map[string]uint) []string {
 	var diff []string
 	for addr := range other {
 		if me[addr] < other[addr] {
@@ -374,7 +374,7 @@ func (n *node) SendView(except []string, dest string) error {
 
 // sendDiffView send rumors which msg doesn't have (in order of increasing sequence number)
 func (n *node) sendDiffView(msg types.StatusMessage, dest string) error {
-	diff := CompareView(msg, n.rumors.GetView())
+	diff := n.CompareView(msg, n.rumors.GetView())
 	var rumorList []types.Rumor
 	for _, addr := range diff {
 		// send all rumors from addr which is not already received by
@@ -622,6 +622,7 @@ type Proposer struct {
 	id            uint
 	maxAcceptedId uint
 	acceptedValue *types.PaxosValue
+	proposedValue *types.PaxosValue
 	phase         uint
 	mu            sync.Mutex
 }
@@ -634,6 +635,7 @@ func (n *node) NewProposer(s uint) (a *Proposer) {
 		nbResponses:   0,
 		maxAcceptedId: 0,
 		acceptedValue: nil,
+		proposedValue: nil,
 		phase:         1,
 		id:            n.conf.PaxosID,
 	}
@@ -654,6 +656,7 @@ func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) (*types.Paxo
 		//begin Phase 2
 		v := &proposedValue
 		p.mu.Lock()
+		p.proposedValue = &proposedValue
 		if p.acceptedValue != nil {
 			v = p.acceptedValue
 		}
@@ -664,8 +667,10 @@ func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) (*types.Paxo
 		}
 		if result {
 			// consensus is reached!
+			log.Info().Msgf("consensus is reached")
 			return v, nil
 		}
+		log.Info().Msgf("consensus not reached")
 		// prepare message to retry sending Prepare message
 		p.mu.Lock()
 		p.id += p.conf.TotalPeers
@@ -675,7 +680,6 @@ func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) (*types.Paxo
 
 // SendPrepare send Paxos Prepare message, and return if Proposer received enough Promises
 func (p *Proposer) SendPrepare() error {
-	p.mu.Lock()
 	p.phase = 1
 	// Send prepare message while we don't have a majority of promises
 	for {
@@ -685,7 +689,6 @@ func (p *Proposer) SendPrepare() error {
 			ID:     p.id,
 			Source: p.conf.Socket.GetAddress(),
 		}
-		p.mu.Unlock()
 		msg, err := p.conf.MessageRegistry.MarshalMessage(prepareMsg)
 		if err != nil {
 			return err
@@ -714,7 +717,6 @@ func (p *Proposer) SendPrepare() error {
 			default:
 			}
 		}
-		p.mu.Lock()
 		// prepare message to retry sending Prepare message
 		p.id += p.conf.TotalPeers
 	}
@@ -737,14 +739,17 @@ func (p *Proposer) SendPropose(value *types.PaxosValue) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	err = p.Broadcast(msg)
-	if err != nil {
-		return false, err
-	}
+	go func() {
+		err = p.Broadcast(msg)
+		if err != nil {
+			log.Error().Msgf("error to broadcast tlc message")
+		}
+	}()
 	//observe if accept responses represent a majority
 	for {
 		p.mu.Lock()
 		if int(p.nbResponses) >= p.conf.PaxosThreshold(p.conf.TotalPeers) {
+			log.Info().Msgf("consensus is reached")
 			// consensus is reached!
 			p.mu.Unlock()
 			return true, nil
@@ -769,11 +774,11 @@ type TLC struct {
 	a           *Acceptor
 	step        uint
 	broadcasted bool
+	mu          sync.Mutex
 	Resp        map[uint]struct {
 		nb    uint
 		value types.BlockchainBlock
 	}
-	mu sync.Mutex
 }
 
 func (n *node) NewTLC() (tlc *TLC) {
@@ -819,6 +824,7 @@ func (tlc *TLC) NewBlock(value *types.PaxosValue) (types.BlockchainBlock, error)
 }
 
 func (tlc *TLC) SendTLC(block types.BlockchainBlock) error {
+	log.Info().Msgf("%v: Broadcast TLC", tlc.conf.Socket.GetAddress())
 	// Broadcast TLC msg
 	msg := types.TLCMessage{
 		Step:  tlc.step,
@@ -859,24 +865,26 @@ func (tlc *TLC) LaunchConsensus(value types.PaxosValue) error {
 		if NamingStore.Get(oursName) != nil {
 			return xerrors.Errorf("name already exists: %s", NamingStore.Get(oursName))
 		}
-		chosenValue, err := tlc.p.ProposeConsensus(value)
+		_, err := tlc.p.ProposeConsensus(value)
 		if err != nil {
 			return err
 		}
-		if chosenValue != nil {
-			// consensus is reached!
-			block, err := tlc.NewBlock(chosenValue)
+		/*
+			if chosenValue != nil {
+				// consensus is reached!
+				block, err := tlc.NewBlock(chosenValue)
+				if err != nil {
+					return err
+				}
+				err = tlc.SendTLC(block)
+				if err != nil {
+					return err
+				}
+			}
 			if err != nil {
 				return err
 			}
-			err = tlc.SendTLC(block)
-			if err != nil {
-				return err
-			}
-		}
-		if err != nil {
-			return err
-		}
+		*/
 		if value.Filename == oursName {
 			return nil
 		}

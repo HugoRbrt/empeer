@@ -1,16 +1,20 @@
 package impl
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"github.com/rs/xid"
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/storage"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
+	"golang.org/x/xerrors"
 	"io"
 	"math/rand"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -596,67 +600,15 @@ type Acceptor struct {
 	acceptedValue *types.PaxosValue
 }
 
-// NewAcceptor permit to create an acceptor role for the node
-func (n *node) NewAcceptor() (a *Acceptor) {
+// NewAcceptor permit to create an acceptor role for the node at step s
+func (n *node) NewAcceptor(s uint) (a *Acceptor) {
 	return &Acceptor{
 		node:          n,
 		maxId:         0,
-		step:          0,
+		step:          s,
 		acceptedValue: nil,
 		acceptedID:    0,
 	}
-}
-
-// ExecPrepare execute a received paxos prepare message
-func (a *Acceptor) ExecPrepare(msg types.PaxosPrepareMessage) error {
-	if msg.Step != a.step || msg.ID <= a.maxId {
-		return nil
-	}
-
-	// PROMISE response
-	a.maxId = msg.ID
-	promiseMsg := types.PaxosPromiseMessage{
-		Step:          msg.Step,
-		ID:            msg.ID,
-		AcceptedID:    a.acceptedID,
-		AcceptedValue: a.acceptedValue,
-	}
-	trPromiseMsg, err := a.conf.MessageRegistry.MarshalMessage(&promiseMsg)
-	if err != nil {
-		return err
-	}
-	privMsg := types.PrivateMessage{Msg: &trPromiseMsg, Recipients: map[string]struct{}{msg.Source: {}}}
-	respMsg, err := a.conf.MessageRegistry.MarshalMessage(privMsg)
-	if err != nil {
-		return err
-	}
-	go func() {
-		err = a.Broadcast(respMsg)
-		if err != nil {
-			log.Error().Msgf("error to broadcast promise message")
-		}
-	}()
-	return nil
-}
-
-// ExecPropose execute a received paxos propose message
-func (a *Acceptor) ExecPropose(msg types.PaxosProposeMessage) error {
-	if msg.Step != a.step || msg.ID != a.maxId {
-		return nil
-	}
-	// ACCEPT response
-	a.acceptedID = msg.ID
-	a.acceptedValue = &msg.Value
-	acceptMsg := types.PaxosAcceptMessage{
-		Step:  msg.Step,
-		ID:    msg.ID,
-		Value: msg.Value,
-	}
-	trAcceptMsg, err := a.conf.MessageRegistry.MarshalMessage(acceptMsg)
-	if err != nil {
-		return err
-	}
-	return a.Broadcast(trAcceptMsg)
 }
 
 // Proposer
@@ -674,11 +626,11 @@ type Proposer struct {
 	mu            sync.Mutex
 }
 
-// NewProposer permit to create an acceptor role for the node
-func (n *node) NewProposer() (a *Proposer) {
+// NewProposer permit to create an acceptor role for the node at step s
+func (n *node) NewProposer(s uint) (a *Proposer) {
 	return &Proposer{
 		node:          n,
-		step:          0,
+		step:          s,
 		nbResponses:   0,
 		maxAcceptedId: 0,
 		acceptedValue: nil,
@@ -687,16 +639,16 @@ func (n *node) NewProposer() (a *Proposer) {
 	}
 }
 
-func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) error {
+func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) (*types.PaxosValue, error) {
 	for {
 		// begin phase 1
 		err := p.SendPrepare()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		select {
 		case <-p.ctx.Done():
-			return nil
+			return nil, nil
 		default:
 		}
 		//begin Phase 2
@@ -708,10 +660,11 @@ func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) error {
 		p.mu.Unlock()
 		result, err := p.SendPropose(v)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if result {
-			return nil
+			// consensus is reached!
+			return v, nil
 		}
 		// prepare message to retry sending Prepare message
 		p.mu.Lock()
@@ -792,7 +745,7 @@ func (p *Proposer) SendPropose(value *types.PaxosValue) (bool, error) {
 	for {
 		p.mu.Lock()
 		if int(p.nbResponses) >= p.conf.PaxosThreshold(p.conf.TotalPeers) {
-			// go to next phase
+			// consensus is reached!
 			p.mu.Unlock()
 			return true, nil
 		}
@@ -808,27 +761,124 @@ func (p *Proposer) SendPropose(value *types.PaxosValue) (bool, error) {
 	}
 }
 
-// ExecPromise execute a received paxos promise message
-func (p *Proposer) ExecPromise(msg types.PaxosPromiseMessage) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if msg.Step != p.step || p.phase != 1 {
-		return nil
+// TLC
+
+type TLC struct {
+	*node
+	p           *Proposer
+	a           *Acceptor
+	step        uint
+	broadcasted bool
+	Resp        map[uint]struct {
+		nb    uint
+		value types.BlockchainBlock
 	}
-	p.nbResponses++
-	if msg.AcceptedID > p.maxAcceptedId {
-		p.maxAcceptedId = msg.AcceptedID
-		p.acceptedValue = msg.AcceptedValue
+	mu sync.Mutex
+}
+
+func (n *node) NewTLC() (tlc *TLC) {
+	return &TLC{
+		node:        n,
+		p:           n.NewProposer(0),
+		a:           n.NewAcceptor(0),
+		step:        0,
+		broadcasted: false,
+		Resp: make(map[uint]struct {
+			nb    uint
+			value types.BlockchainBlock
+		}),
 	}
+}
+
+func (tlc *TLC) NextStep() {
+	log.Info().Msgf("%v: next step", tlc.conf.Socket.GetAddress())
+	tlc.step++
+	tlc.broadcasted = false
+	tlc.a = tlc.NewAcceptor(tlc.step)
+	tlc.p = tlc.NewProposer(tlc.step)
+}
+
+func (tlc *TLC) NewBlock(value *types.PaxosValue) (types.BlockchainBlock, error) {
+	newBlock := types.BlockchainBlock{
+		Index:    tlc.step,
+		Hash:     nil,
+		Value:    *value,
+		PrevHash: tlc.conf.Storage.GetBlockchainStore().Get(storage.LastBlockKey),
+	}
+	if newBlock.PrevHash == nil {
+		newBlock.PrevHash = make([]byte, 32)
+	}
+	h := sha256.New()
+	h.Write([]byte(strconv.Itoa(int(newBlock.Index))))
+	h.Write([]byte(newBlock.Value.UniqID))
+	h.Write([]byte(newBlock.Value.Filename))
+	h.Write([]byte(newBlock.Value.Metahash))
+	h.Write(newBlock.PrevHash)
+	newBlock.Hash = h.Sum(nil)
+	return newBlock, nil
+}
+
+func (tlc *TLC) SendTLC(block types.BlockchainBlock) error {
+	// Broadcast TLC msg
+	msg := types.TLCMessage{
+		Step:  tlc.step,
+		Block: block,
+	}
+	transpMsg, err := tlc.conf.MessageRegistry.MarshalMessage(msg)
+	if err != nil {
+		return err
+	}
+	tlc.broadcasted = true
+	go func() {
+		err = tlc.Broadcast(transpMsg)
+		if err != nil {
+			log.Error().Msgf("error to broadcast tlc message")
+		}
+	}()
 	return nil
 }
 
-// ExecAccept execute a received paxos accept message
-func (p *Proposer) ExecAccept(msg types.PaxosPromiseMessage) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if msg.Step == p.step && p.phase == 2 {
-		p.nbResponses++
+// AddBlock add the block to its own blockchain and store fileName/MetaHash association
+func (tlc *TLC) AddBlock(block types.BlockchainBlock) error {
+	log.Info().Msgf("adding block: %v", block.Value.Filename)
+	blockchain := tlc.conf.Storage.GetBlockchainStore()
+	buf, err := block.Marshal()
+	if err != nil {
+		return err
 	}
+	blockchain.Set(hex.EncodeToString(block.Hash), buf)
+	blockchain.Set(storage.LastBlockKey, block.Hash)
+	tlc.conf.Storage.GetNamingStore().Set(block.Value.Filename, []byte(block.Value.Metahash))
 	return nil
+}
+
+func (tlc *TLC) LaunchConsensus(value types.PaxosValue) error {
+	oursName := value.Filename
+	NamingStore := tlc.conf.Storage.GetNamingStore()
+	for {
+		if NamingStore.Get(oursName) != nil {
+			return xerrors.Errorf("name already exists: %s", NamingStore.Get(oursName))
+		}
+		chosenValue, err := tlc.p.ProposeConsensus(value)
+		if err != nil {
+			return err
+		}
+		if chosenValue != nil {
+			// consensus is reached!
+			block, err := tlc.NewBlock(chosenValue)
+			if err != nil {
+				return err
+			}
+			err = tlc.SendTLC(block)
+			if err != nil {
+				return err
+			}
+		}
+		if err != nil {
+			return err
+		}
+		if value.Filename == oursName {
+			return nil
+		}
+	}
 }

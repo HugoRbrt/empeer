@@ -29,8 +29,7 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.waitAck.Init()
 	node.fileNotif.Init()
 	node.catalog.Init()
-	node.a = node.NewAcceptor()
-	node.p = node.NewProposer()
+	node.tlc = node.NewTLC()
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
 	// create a new context which allows goroutine to know if Stop() is call
 	node.ctx, node.cancel = context.WithCancel(context.Background())
@@ -64,8 +63,7 @@ type node struct {
 
 	// Consensus attributes
 	// acceptor role
-	a *Acceptor
-	p *Proposer
+	tlc *TLC
 }
 
 // HOMEWORK 0
@@ -83,11 +81,11 @@ func (n *node) Start() error {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.DataReplyMessage{}, n.ExecDataReplyMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.SearchReplyMessage{}, n.ExecSearchReplyMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.SearchRequestMessage{}, n.ExecSearchRequestMessage)
-	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPrepareMessage{}, n.ExecPaxosPrepareMessage)
-	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPromiseMessage{}, n.ExecPaxosPromiseMessage)
-	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosProposeMessage{}, n.ExecPaxosProposeMessage)
-	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosAcceptMessage{}, n.ExecPaxosAcceptMessage)
-	n.conf.MessageRegistry.RegisterMessageCallback(types.TLCMessage{}, n.ExecTLCMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPrepareMessage{}, n.tlc.a.ExecPaxosPrepareMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosPromiseMessage{}, n.tlc.p.ExecPaxosPromiseMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosProposeMessage{}, n.tlc.a.ExecPaxosProposeMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosAcceptMessage{}, n.tlc.p.ExecPaxosAcceptMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.TLCMessage{}, n.tlc.ExecTLCMessage)
 
 	// we signal when the goroutine starts and when it ends
 	n.wg.Add(1)
@@ -469,8 +467,16 @@ func (n *node) DownloadChunk(name string) ([]byte, error) {
 // Tag implement the peer.DataSharing
 func (n *node) Tag(name string, mh string) error {
 	NamingStore := n.conf.Storage.GetNamingStore()
-	NamingStore.Set(name, []byte(mh))
-	return nil
+	value := types.PaxosValue{
+		UniqID:   xid.New().String(),
+		Filename: name,
+		Metahash: mh,
+	}
+	if n.conf.TotalPeers <= 1 {
+		NamingStore.Set(name, []byte(mh))
+		return nil
+	}
+	return n.tlc.LaunchConsensus(value)
 }
 
 // Resolve implement the peer.DataSharing

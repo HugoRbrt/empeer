@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"bytes"
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
@@ -165,7 +166,6 @@ func (n *node) ExecAckMessage(msg types.Message, pkt transport.Packet) error {
 }
 
 func (n *node) ExecPrivateMessage(msg types.Message, pkt transport.Packet) error {
-	log.Info().Msgf("%s: privateMsg received by %s", n.conf.Socket.GetAddress(), pkt.Header.Source)
 	// cast the message to its actual type. You assume it is the right type.
 	privMsg, ok := msg.(*types.PrivateMessage)
 	if !ok {
@@ -283,54 +283,170 @@ func (n *node) ExecSearchReplyMessage(msg types.Message, pkt transport.Packet) e
 	return nil
 }
 
-func (n *node) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Packet) error {
-	log.Info().Msgf("%s: ExecPaxosPrepareMessage received by %s", n.conf.Socket.GetAddress(), pkt.Header.Source)
+func (a *Acceptor) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Packet) error {
 	// cast the message to its actual type. You assume it is the right type.
 	paxosPrepareMsg, ok := msg.(*types.PaxosPrepareMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	err := n.a.ExecPrepare(*paxosPrepareMsg)
-	return err
+	if paxosPrepareMsg.Step != a.step || paxosPrepareMsg.ID <= a.maxId {
+		return nil
+	}
+
+	// PROMISE response
+	a.maxId = paxosPrepareMsg.ID
+	promiseMsg := types.PaxosPromiseMessage{
+		Step:          paxosPrepareMsg.Step,
+		ID:            paxosPrepareMsg.ID,
+		AcceptedID:    a.acceptedID,
+		AcceptedValue: a.acceptedValue,
+	}
+	trPromiseMsg, err := a.conf.MessageRegistry.MarshalMessage(&promiseMsg)
+	if err != nil {
+		return err
+	}
+	privMsg := types.PrivateMessage{Msg: &trPromiseMsg, Recipients: map[string]struct{}{paxosPrepareMsg.Source: {}}}
+	respMsg, err := a.conf.MessageRegistry.MarshalMessage(privMsg)
+	if err != nil {
+		return err
+	}
+	go func() {
+		err = a.Broadcast(respMsg)
+		if err != nil {
+			log.Error().Msgf("error to broadcast promise message")
+		}
+	}()
+	return nil
 }
 
-func (n *node) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Packet) error {
-	log.Info().Msgf("%s: ExecPaxosPrepareMessage received by %s", n.conf.Socket.GetAddress(), pkt.Header.Source)
+func (p *Proposer) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Packet) error {
 	// cast the message to its actual type. You assume it is the right type.
 	paxosPromiseMsg, ok := msg.(*types.PaxosPromiseMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	err := n.p.ExecPromise(*paxosPromiseMsg)
-	return err
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if paxosPromiseMsg.Step != p.step || p.phase != 1 {
+		return nil
+	}
+	p.nbResponses++
+	if paxosPromiseMsg.AcceptedID > p.maxAcceptedId {
+		p.maxAcceptedId = paxosPromiseMsg.AcceptedID
+		p.acceptedValue = paxosPromiseMsg.AcceptedValue
+	}
+	return nil
 }
 
-func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) error {
+func (a *Acceptor) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) error {
 	// cast the message to its actual type. You assume it is the right type.
 	paxosProposeMsg, ok := msg.(*types.PaxosProposeMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	err := n.a.ExecPropose(*paxosProposeMsg)
-	return err
+	if paxosProposeMsg.Step != a.step || paxosProposeMsg.ID != a.maxId {
+		return nil
+	}
+	// ACCEPT response
+	a.acceptedID = paxosProposeMsg.ID
+	a.acceptedValue = &paxosProposeMsg.Value
+	acceptMsg := types.PaxosAcceptMessage{
+		Step:  paxosProposeMsg.Step,
+		ID:    paxosProposeMsg.ID,
+		Value: paxosProposeMsg.Value,
+	}
+	trAcceptMsg, err := a.conf.MessageRegistry.MarshalMessage(acceptMsg)
+	if err != nil {
+		return err
+	}
+	return a.Broadcast(trAcceptMsg)
 }
 
-func (n *node) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) error {
+func (p *Proposer) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) error {
 	// cast the message to its actual type. You assume it is the right type.
 	paxosAcceptMsg, ok := msg.(*types.PaxosAcceptMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	_ = paxosAcceptMsg
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if paxosAcceptMsg.Step == p.step && p.phase == 2 {
+		p.nbResponses++
+	}
 	return nil
 }
 
-func (n *node) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
+func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
+	tlc.mu.Lock()
+	defer tlc.mu.Unlock()
 	// cast the message to its actual type. You assume it is the right type.
 	tlcMsg, ok := msg.(*types.TLCMessage)
 	if !ok {
-		return xerrors.Errorf("wrong type: %T", msg)
+		return xerrors.Errorf("wrong type: %T", tlcMsg)
 	}
-	_ = tlcMsg
-	return nil
+	log.Info().Msgf("%v: step: %v", tlc.conf.Socket.GetAddress(), tlcMsg.Step)
+	log.Info().Msgf("%v: current step: %v", tlc.conf.Socket.GetAddress(), tlc.step)
+	if tlcMsg.Step < tlc.step {
+		return nil
+	}
+	// store the message for corresponding step
+	v, exist := tlc.Resp[tlcMsg.Step]
+	if !exist {
+		v.nb = 1
+		log.Error().Msgf("new store value: %v for step %v", tlcMsg.Block.Hash, tlcMsg.Step)
+		v.value = tlcMsg.Block
+		tlc.Resp[tlcMsg.Step] = v
+	} else {
+		v.nb++
+		tlc.Resp[tlcMsg.Step] = v
+		log.Error().Msgf("exist store value: %v for step %v", tlcMsg.Block.Hash, tlcMsg.Step)
+		if !bytes.Equal(v.value.Hash, tlcMsg.Block.Hash) {
+			log.Error().Msgf("not the same block for the same tlc step: %v != %v for step %v", v.value.Hash, tlcMsg.Block.Hash, tlcMsg.Step)
+		}
+	}
+	// the rest of the work is done on our current step
+	vCurr, existCurr := tlc.Resp[tlc.step]
+	if !existCurr {
+		log.Error().Msgf("doesn't exit for step %v", tlc.step)
+		return nil
+	}
+	log.Info().Msgf("v.nb: %v/%v at step %v", vCurr.nb, tlc.conf.PaxosThreshold(tlc.conf.TotalPeers), tlcMsg.Step)
+	if int(vCurr.nb) >= tlc.conf.PaxosThreshold(tlc.conf.TotalPeers) {
+		// step 1&2
+		err := tlc.AddBlock(vCurr.value)
+		if err != nil {
+			return err
+		}
+		// step 3
+		if !tlc.broadcasted {
+			err = tlc.SendTLC(tlcMsg.Block)
+			if err != nil {
+				return err
+			}
+		}
+		// step 4
+		tlc.NextStep()
+	} else {
+		return nil
+	}
+	//step 5
+	for {
+		v, exist := tlc.Resp[tlc.step]
+		if !exist {
+			return nil
+		}
+		log.Info().Msgf("step %v, value: %v", tlc.step, int(v.nb))
+		if int(v.nb) >= tlc.conf.PaxosThreshold(tlc.conf.TotalPeers) {
+			// step 1&2
+			err := tlc.AddBlock(v.value)
+			if err != nil {
+				return err
+			}
+			// step 4
+			tlc.NextStep()
+		} else {
+			log.Info().Msgf("stop at step %v", tlc.step)
+			return nil
+		}
+	}
 }

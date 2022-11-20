@@ -60,8 +60,7 @@ func (n *node) ExecRumorsMessage(msg types.Message, pkt transport.Packet) error 
 		}
 		err := n.conf.MessageRegistry.ProcessPacket(packet)
 		if err != nil {
-			n.rumorMu.Unlock()
-			return err
+			log.Error().Msgf("error: %v", err.Error())
 		}
 		n.rumors.Process(rumor.Origin, rumor, &n.table, pkt.Header.RelayedBy)
 	}
@@ -290,13 +289,13 @@ func (n *node) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Packet) 
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	if paxosPrepareMsg.Step != a.step || paxosPrepareMsg.ID <= a.maxId {
+	if paxosPrepareMsg.Step != a.step || paxosPrepareMsg.ID <= a.maxID {
 		a.mu.Unlock()
 		return nil
 	}
 
 	// PROMISE response
-	a.maxId = paxosPrepareMsg.ID
+	a.maxID = paxosPrepareMsg.ID
 	promiseMsg := types.PaxosPromiseMessage{
 		Step:          paxosPrepareMsg.Step,
 		ID:            paxosPrepareMsg.ID,
@@ -335,8 +334,8 @@ func (n *node) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Packet) 
 		return nil
 	}
 	p.nbResponses++
-	if paxosPromiseMsg.AcceptedID > p.maxAcceptedId {
-		p.maxAcceptedId = paxosPromiseMsg.AcceptedID
+	if paxosPromiseMsg.AcceptedID > p.maxAcceptedID {
+		p.maxAcceptedID = paxosPromiseMsg.AcceptedID
 		p.acceptedValue = paxosPromiseMsg.AcceptedValue
 	}
 	return nil
@@ -350,7 +349,7 @@ func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) 
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 	a.mu.Lock()
-	if paxosProposeMsg.Step != a.step || paxosProposeMsg.ID != a.maxId {
+	if paxosProposeMsg.Step != a.step || paxosProposeMsg.ID != a.maxID {
 		a.mu.Unlock()
 		return nil
 	}
@@ -377,47 +376,44 @@ func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) 
 }
 
 func (n *node) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) error {
-	p := n.tlc.p
+	tlc := n.tlc
 	// cast the message to its actual type. You assume it is the right type.
 	paxosAcceptMsg, ok := msg.(*types.PaxosAcceptMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
-	p.mu.Lock()
-	if paxosAcceptMsg.Step == p.step {
-		p.nbResponses++
-		if &paxosAcceptMsg.Value != nil {
-			p.acceptedValue = &paxosAcceptMsg.Value
-		}
+	tlc.p.mu.Lock()
+	if paxosAcceptMsg.Step == tlc.p.step {
+		tlc.p.nbResponses++
+		tlc.p.acceptedValue = &paxosAcceptMsg.Value
 	}
-	if int(p.nbResponses) >= p.conf.PaxosThreshold(p.conf.TotalPeers) {
-		// consensus is reached!
-		v := p.proposedValue
-		if p.acceptedValue != nil {
-			v = p.acceptedValue
-		}
-		p.mu.Unlock()
-		if v == nil {
-			return nil
-		}
-		log.Info().Msgf("block: %v", v.Filename)
-		block, err := n.tlc.NewBlock(v)
+	tlc.mu.Lock()
+	if int(tlc.p.nbResponses) >= tlc.p.conf.PaxosThreshold(tlc.p.conf.TotalPeers) && paxosAcceptMsg.Step == tlc.step {
+		tlc.mu.Unlock()
+		// consensus is reached for the first time!
+		v := &paxosAcceptMsg.Value
+		tlc.p.mu.Unlock()
+		block, err := tlc.NewBlock(v)
 		if err != nil {
 			return err
 		}
 		go func() {
-			err = n.tlc.SendTLC(block)
+			err = tlc.SendNewTLC(block)
 			if err != nil {
 				log.Error().Msgf(err.Error())
 			}
 		}()
 	} else {
-		p.mu.Unlock()
+		tlc.mu.Unlock()
+		tlc.p.mu.Unlock()
 	}
 	return nil
 }
 
-func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
+func (n *node) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
+	tlc := n.tlc
+	tlc.muEx.Lock()
+	defer tlc.muEx.Unlock()
 	// cast the message to its actual type. You assume it is the right type.
 	tlcMsg, ok := msg.(*types.TLCMessage)
 	if !ok {
@@ -433,40 +429,26 @@ func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
 	if !exist {
 		v.nb = 1
 		v.value = tlcMsg.Block
-		tlc.Resp[tlcMsg.Step] = v
 	} else {
 		v.nb++
-		tlc.Resp[tlcMsg.Step] = v
 	}
+	tlc.Resp[tlcMsg.Step] = v
 	// the rest of the work is done on our current step
-	vCurr, existCurr := tlc.Resp[tlc.step]
+	v, existCurr := tlc.Resp[tlc.step]
 	tlc.mu.Unlock()
 	if !existCurr {
-		log.Error().Msgf("doesn't exit for step %v", tlc.step)
 		return nil
 	}
-	if int(vCurr.nb) >= tlc.conf.PaxosThreshold(tlc.conf.TotalPeers) {
-		// step 1&2
-		err := tlc.AddBlock(vCurr.value)
+
+	if int(v.nb) >= tlc.conf.PaxosThreshold(tlc.conf.TotalPeers) {
+		err := n.AtThresholdTLC(false, v.value)
 		if err != nil {
 			return err
 		}
-		// step 3
-		tlc.mu.Lock()
-		if !tlc.broadcasted {
-			tlc.mu.Unlock()
-			err = tlc.SendTLC(tlcMsg.Block)
-			if err != nil {
-				return err
-			}
-		} else {
-			tlc.mu.Unlock()
-		}
-		// step 4
-		tlc.NextStep()
 	} else {
 		return nil
 	}
+
 	for {
 		tlc.mu.Lock()
 		v, exist := tlc.Resp[tlc.step]
@@ -475,13 +457,10 @@ func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
 			return nil
 		}
 		if int(v.nb) >= tlc.conf.PaxosThreshold(tlc.conf.TotalPeers) {
-			// step 1&2
-			err := tlc.AddBlock(v.value)
+			err := n.AtThresholdTLC(true, v.value)
 			if err != nil {
 				return err
 			}
-			// step 4
-			tlc.NextStep()
 		} else {
 			return nil
 		}

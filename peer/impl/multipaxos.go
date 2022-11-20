@@ -18,7 +18,7 @@ import (
 type Acceptor struct {
 	*node
 
-	maxId         uint
+	maxID         uint
 	step          uint
 	acceptedID    uint
 	acceptedValue *types.PaxosValue
@@ -29,7 +29,7 @@ type Acceptor struct {
 func (n *node) NewAcceptor(s uint) (a *Acceptor) {
 	return &Acceptor{
 		node:          n,
-		maxId:         0,
+		maxID:         0,
 		step:          s,
 		acceptedValue: nil,
 		acceptedID:    0,
@@ -53,7 +53,7 @@ type Proposer struct {
 	step          uint
 	nbResponses   uint
 	id            uint
-	maxAcceptedId uint
+	maxAcceptedID uint
 	acceptedValue *types.PaxosValue
 	proposedValue *types.PaxosValue
 	phase         uint
@@ -66,7 +66,7 @@ func (n *node) NewProposer(s uint) *Proposer {
 		node:          n,
 		step:          s,
 		nbResponses:   0,
-		maxAcceptedId: 0,
+		maxAcceptedID: 0,
 		acceptedValue: nil,
 		proposedValue: nil,
 		phase:         1,
@@ -170,7 +170,9 @@ func (p *Proposer) SendPropose(value *types.PaxosValue) (bool, error) {
 
 // ProposeConsensus initiate a consensus with the proposer role
 func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) error {
+	p.mu.Lock()
 	p.proposedValue = &proposedValue
+	p.mu.Unlock()
 	for {
 		// begin phase 1
 		err := p.SendPrepare()
@@ -215,6 +217,7 @@ type TLC struct {
 	step        uint
 	broadcasted bool
 	mu          sync.Mutex
+	muEx        sync.Mutex
 	Resp        map[uint]struct {
 		nb    uint
 		value types.BlockchainBlock
@@ -270,24 +273,25 @@ func (tlc *TLC) NewBlock(value *types.PaxosValue) (types.BlockchainBlock, error)
 }
 
 // AddBlock add the block to its own blockchain and store fileName/MetaHash association
-func (tlc *TLC) AddBlock(block types.BlockchainBlock) error {
-	blockchain := tlc.conf.Storage.GetBlockchainStore()
+func (n *node) AddBlock(block types.BlockchainBlock) error {
 	buf, err := block.Marshal()
 	if err != nil {
 		return err
 	}
-	blockchain.Set(hex.EncodeToString(block.Hash), buf)
-	blockchain.Set(storage.LastBlockKey, block.Hash)
-	tlc.conf.Storage.GetNamingStore().Set(block.Value.Filename, []byte(block.Value.Metahash))
+	n.conf.Storage.GetBlockchainStore().Set(hex.EncodeToString(block.Hash), buf)
+	n.conf.Storage.GetBlockchainStore().Set(storage.LastBlockKey, block.Hash)
+	name := block.Value.Filename
+	b := []byte(block.Value.Metahash)
+	n.conf.Storage.GetNamingStore().Set(name, b)
 	return nil
 }
 
-// SendTLC send a tlc message
-func (tlc *TLC) SendTLC(block types.BlockchainBlock) error {
+// SendNewTLC send a tlc message
+func (tlc *TLC) SendNewTLC(block types.BlockchainBlock) error {
 	tlc.mu.Lock()
 	// Broadcast TLC msg
 	msg := types.TLCMessage{
-		Step:  tlc.step,
+		Step:  block.Index,
 		Block: block,
 	}
 	transpMsg, err := tlc.conf.MessageRegistry.MarshalMessage(msg)
@@ -321,4 +325,28 @@ func (tlc *TLC) LaunchConsensus(value types.PaxosValue) error {
 			return nil
 		}
 	}
+}
+
+func (n *node) AtThresholdTLC(catchup bool, block types.BlockchainBlock) error {
+	// step 1&2
+	err := n.AddBlock(block)
+	if err != nil {
+		return err
+	}
+	if !catchup {
+		// step 3
+		n.tlc.mu.Lock()
+		if !n.tlc.broadcasted {
+			n.tlc.mu.Unlock()
+			err = n.tlc.SendNewTLC(block)
+			if err != nil {
+				return err
+			}
+		} else {
+			n.tlc.mu.Unlock()
+		}
+	}
+	// step 4
+	n.tlc.NextStep()
+	return nil
 }

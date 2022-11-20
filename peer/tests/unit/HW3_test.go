@@ -2,7 +2,6 @@ package unit
 
 import (
 	"encoding/hex"
-	"github.com/rs/zerolog/log"
 	"math/rand"
 	"os"
 	"sync"
@@ -1441,7 +1440,6 @@ func Test_HW3_Tag_Paxos_Catchup(t *testing.T) {
 	time.Sleep(time.Second * 2)
 
 	// > checking the name and blockchain stores
-	log.Info().Msgf("%v", node3.GetStorage().GetNamingStore())
 	require.Equal(t, numBlocks, node3.GetStorage().GetNamingStore().Len())
 	require.Equal(t, numBlocks+1, node3.GetStorage().GetBlockchainStore().Len())
 

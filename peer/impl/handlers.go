@@ -283,7 +283,6 @@ func (n *node) ExecSearchReplyMessage(msg types.Message, pkt transport.Packet) e
 }
 
 func (n *node) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Packet) error {
-	log.Info().Msgf("%v: received PREPARE", n.conf.Socket.GetAddress())
 	a := n.tlc.a
 	a.mu.Lock()
 	// cast the message to its actual type. You assume it is the right type.
@@ -324,7 +323,6 @@ func (n *node) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Packet) 
 }
 
 func (n *node) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Packet) error {
-	log.Info().Msgf("%v: received PROMISE", n.conf.Socket.GetAddress())
 	p := n.tlc.p
 	// cast the message to its actual type. You assume it is the right type.
 	paxosPromiseMsg, ok := msg.(*types.PaxosPromiseMessage)
@@ -346,7 +344,6 @@ func (n *node) ExecPaxosPromiseMessage(msg types.Message, pkt transport.Packet) 
 
 func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) error {
 	a := n.tlc.a
-	log.Info().Msgf("%v: received PROPOSE", a.conf.Socket.GetAddress())
 	// cast the message to its actual type. You assume it is the right type.
 	paxosProposeMsg, ok := msg.(*types.PaxosProposeMessage)
 	if !ok {
@@ -381,7 +378,6 @@ func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) 
 
 func (n *node) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) error {
 	p := n.tlc.p
-	log.Info().Msgf("%v: received ACCEPT", p.conf.Socket.GetAddress())
 	// cast the message to its actual type. You assume it is the right type.
 	paxosAcceptMsg, ok := msg.(*types.PaxosAcceptMessage)
 	if !ok {
@@ -409,7 +405,12 @@ func (n *node) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) e
 		if err != nil {
 			return err
 		}
-		go n.tlc.SendTLC(block)
+		go func() {
+			err = n.tlc.SendTLC(block)
+			if err != nil {
+				log.Error().Msgf(err.Error())
+			}
+		}()
 	} else {
 		p.mu.Unlock()
 	}
@@ -417,7 +418,6 @@ func (n *node) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) e
 }
 
 func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
-	log.Info().Msgf("%v: received TLC", tlc.conf.Socket.GetAddress())
 	// cast the message to its actual type. You assume it is the right type.
 	tlcMsg, ok := msg.(*types.TLCMessage)
 	if !ok {
@@ -467,7 +467,6 @@ func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
 	} else {
 		return nil
 	}
-	//step 5
 	for {
 		tlc.mu.Lock()
 		v, exist := tlc.Resp[tlc.step]

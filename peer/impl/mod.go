@@ -573,5 +573,3 @@ func (n *node) SearchFirst(pattern regexp.Regexp, conf peer.ExpandingRing) (name
 	}
 	return "", nil
 }
-
-// HOMEWORK 3

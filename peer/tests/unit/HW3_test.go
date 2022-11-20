@@ -1409,15 +1409,16 @@ func Test_HW3_Tag_Paxos_Catchup(t *testing.T) {
 	}
 
 	time.Sleep(time.Second)
+
 	// > at this stage node1 and node2 must have 10 blocks in their blockchain
 	// store and 10 names in their name store.
 
-	require.Equal(t, numBlocks, node1.GetStorage().GetNamingStore().Len())
-	require.Equal(t, numBlocks, node2.GetStorage().GetNamingStore().Len())
+	require.Equal(t, 10, node1.GetStorage().GetNamingStore().Len())
+	require.Equal(t, 10, node2.GetStorage().GetNamingStore().Len())
 
 	// 11 for the 10 blocks and the last block's hash
-	require.Equal(t, numBlocks+1, node1.GetStorage().GetBlockchainStore().Len())
-	require.Equal(t, numBlocks+1, node2.GetStorage().GetBlockchainStore().Len())
+	require.Equal(t, 11, node1.GetStorage().GetBlockchainStore().Len())
+	require.Equal(t, 11, node2.GetStorage().GetBlockchainStore().Len())
 
 	// > let's add the third peer and see if it can catchup.
 
@@ -1440,8 +1441,9 @@ func Test_HW3_Tag_Paxos_Catchup(t *testing.T) {
 	time.Sleep(time.Second * 2)
 
 	// > checking the name and blockchain stores
-	require.Equal(t, numBlocks, node3.GetStorage().GetNamingStore().Len())
-	require.Equal(t, numBlocks+1, node3.GetStorage().GetBlockchainStore().Len())
+
+	require.Equal(t, 10, node3.GetStorage().GetNamingStore().Len())
+	require.Equal(t, 11, node3.GetStorage().GetBlockchainStore().Len())
 
 	// > check that all blockchain store have the same last block hash
 

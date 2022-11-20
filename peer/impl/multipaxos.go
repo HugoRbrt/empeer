@@ -327,6 +327,7 @@ func (tlc *TLC) LaunchConsensus(value types.PaxosValue) error {
 	}
 }
 
+// AtThresholdTLC does steps when threshold TLC is obtained
 func (n *node) AtThresholdTLC(catchup bool, block types.BlockchainBlock) error {
 	// step 1&2
 	err := n.AddBlock(block)

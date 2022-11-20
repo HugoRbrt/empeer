@@ -598,6 +598,7 @@ type Acceptor struct {
 	step          uint
 	acceptedID    uint
 	acceptedValue *types.PaxosValue
+	mu            sync.Mutex
 }
 
 // NewAcceptor permit to create an acceptor role for the node at step s
@@ -609,6 +610,13 @@ func (n *node) NewAcceptor(s uint) (a *Acceptor) {
 		acceptedValue: nil,
 		acceptedID:    0,
 	}
+}
+
+func (a *Acceptor) NextStep() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.step++
+	a.acceptedValue = nil
 }
 
 // Proposer
@@ -628,7 +636,7 @@ type Proposer struct {
 }
 
 // NewProposer permit to create an acceptor role for the node at step s
-func (n *node) NewProposer(s uint) (a *Proposer) {
+func (n *node) NewProposer(s uint) *Proposer {
 	return &Proposer{
 		node:          n,
 		step:          s,
@@ -642,6 +650,7 @@ func (n *node) NewProposer(s uint) (a *Proposer) {
 }
 
 func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) (*types.PaxosValue, error) {
+	p.proposedValue = &proposedValue
 	for {
 		// begin phase 1
 		err := p.SendPrepare()
@@ -656,7 +665,6 @@ func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) (*types.Paxo
 		//begin Phase 2
 		v := &proposedValue
 		p.mu.Lock()
-		p.proposedValue = &proposedValue
 		if p.acceptedValue != nil {
 			v = p.acceptedValue
 		}
@@ -670,7 +678,7 @@ func (p *Proposer) ProposeConsensus(proposedValue types.PaxosValue) (*types.Paxo
 			log.Info().Msgf("consensus is reached")
 			return v, nil
 		}
-		log.Info().Msgf("consensus not reached")
+		p.phase = 1
 		// prepare message to retry sending Prepare message
 		p.mu.Lock()
 		p.id += p.conf.TotalPeers
@@ -685,7 +693,7 @@ func (p *Proposer) SendPrepare() error {
 	for {
 		// create Prepare Msg
 		prepareMsg := types.PaxosPrepareMessage{
-			Step:   0,
+			Step:   p.step,
 			ID:     p.id,
 			Source: p.conf.Socket.GetAddress(),
 		}
@@ -700,6 +708,7 @@ func (p *Proposer) SendPrepare() error {
 		}
 		//observe if promises response represent a majority
 		timeout := false
+		channel := time.After(p.conf.PaxosProposerRetry)
 		for !timeout {
 			p.mu.Lock()
 			if int(p.nbResponses) >= p.conf.PaxosThreshold(p.conf.TotalPeers) {
@@ -711,7 +720,7 @@ func (p *Proposer) SendPrepare() error {
 			select {
 			case <-p.ctx.Done():
 				return nil
-			case <-time.After(p.conf.PaxosProposerRetry):
+			case <-channel:
 				// Retry SendPrepare
 				timeout = true
 			default:
@@ -729,7 +738,7 @@ func (p *Proposer) SendPropose(value *types.PaxosValue) (bool, error) {
 	p.nbResponses = 0
 	// create Propose Msg
 	proposeMsg := types.PaxosProposeMessage{
-		Step:  0,
+		Step:  p.step,
 		ID:    p.id,
 		Value: *value,
 	}
@@ -739,17 +748,14 @@ func (p *Proposer) SendPropose(value *types.PaxosValue) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	go func() {
-		err = p.Broadcast(msg)
-		if err != nil {
-			log.Error().Msgf("error to broadcast tlc message")
-		}
-	}()
+	err = p.Broadcast(msg)
+	if err != nil {
+		log.Error().Msgf("error to broadcast tlc message")
+	}
 	//observe if accept responses represent a majority
 	for {
 		p.mu.Lock()
 		if int(p.nbResponses) >= p.conf.PaxosThreshold(p.conf.TotalPeers) {
-			log.Info().Msgf("consensus is reached")
 			// consensus is reached!
 			p.mu.Unlock()
 			return true, nil
@@ -764,6 +770,13 @@ func (p *Proposer) SendPropose(value *types.PaxosValue) (bool, error) {
 		default:
 		}
 	}
+}
+
+func (p *Proposer) NextStep() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.step++
+	p.acceptedValue = nil
 }
 
 // TLC
@@ -796,20 +809,23 @@ func (n *node) NewTLC() (tlc *TLC) {
 }
 
 func (tlc *TLC) NextStep() {
-	log.Info().Msgf("%v: next step", tlc.conf.Socket.GetAddress())
+	tlc.mu.Lock()
+	defer tlc.mu.Unlock()
 	tlc.step++
 	tlc.broadcasted = false
-	tlc.a = tlc.NewAcceptor(tlc.step)
-	tlc.p = tlc.NewProposer(tlc.step)
+	tlc.a.NextStep()
+	tlc.p.NextStep()
 }
 
 func (tlc *TLC) NewBlock(value *types.PaxosValue) (types.BlockchainBlock, error) {
+	tlc.mu.Lock()
 	newBlock := types.BlockchainBlock{
 		Index:    tlc.step,
 		Hash:     nil,
 		Value:    *value,
 		PrevHash: tlc.conf.Storage.GetBlockchainStore().Get(storage.LastBlockKey),
 	}
+	tlc.mu.Unlock()
 	if newBlock.PrevHash == nil {
 		newBlock.PrevHash = make([]byte, 32)
 	}
@@ -824,7 +840,7 @@ func (tlc *TLC) NewBlock(value *types.PaxosValue) (types.BlockchainBlock, error)
 }
 
 func (tlc *TLC) SendTLC(block types.BlockchainBlock) error {
-	log.Info().Msgf("%v: Broadcast TLC", tlc.conf.Socket.GetAddress())
+	tlc.mu.Lock()
 	// Broadcast TLC msg
 	msg := types.TLCMessage{
 		Step:  tlc.step,
@@ -835,6 +851,7 @@ func (tlc *TLC) SendTLC(block types.BlockchainBlock) error {
 		return err
 	}
 	tlc.broadcasted = true
+	tlc.mu.Unlock()
 	go func() {
 		err = tlc.Broadcast(transpMsg)
 		if err != nil {
@@ -846,7 +863,6 @@ func (tlc *TLC) SendTLC(block types.BlockchainBlock) error {
 
 // AddBlock add the block to its own blockchain and store fileName/MetaHash association
 func (tlc *TLC) AddBlock(block types.BlockchainBlock) error {
-	log.Info().Msgf("adding block: %v", block.Value.Filename)
 	blockchain := tlc.conf.Storage.GetBlockchainStore()
 	buf, err := block.Marshal()
 	if err != nil {
@@ -869,22 +885,6 @@ func (tlc *TLC) LaunchConsensus(value types.PaxosValue) error {
 		if err != nil {
 			return err
 		}
-		/*
-			if chosenValue != nil {
-				// consensus is reached!
-				block, err := tlc.NewBlock(chosenValue)
-				if err != nil {
-					return err
-				}
-				err = tlc.SendTLC(block)
-				if err != nil {
-					return err
-				}
-			}
-			if err != nil {
-				return err
-			}
-		*/
 		if value.Filename == oursName {
 			return nil
 		}

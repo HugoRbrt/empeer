@@ -1,7 +1,6 @@
 package impl
 
 import (
-	"bytes"
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
@@ -283,13 +282,17 @@ func (n *node) ExecSearchReplyMessage(msg types.Message, pkt transport.Packet) e
 	return nil
 }
 
-func (a *Acceptor) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Packet) error {
+func (n *node) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Packet) error {
+	log.Info().Msgf("%v: received PREPARE", n.conf.Socket.GetAddress())
+	a := n.tlc.a
+	a.mu.Lock()
 	// cast the message to its actual type. You assume it is the right type.
 	paxosPrepareMsg, ok := msg.(*types.PaxosPrepareMessage)
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
 	if paxosPrepareMsg.Step != a.step || paxosPrepareMsg.ID <= a.maxId {
+		a.mu.Unlock()
 		return nil
 	}
 
@@ -301,6 +304,7 @@ func (a *Acceptor) ExecPaxosPrepareMessage(msg types.Message, pkt transport.Pack
 		AcceptedID:    a.acceptedID,
 		AcceptedValue: a.acceptedValue,
 	}
+	a.mu.Unlock()
 	trPromiseMsg, err := a.conf.MessageRegistry.MarshalMessage(&promiseMsg)
 	if err != nil {
 		return err
@@ -348,12 +352,15 @@ func (n *node) ExecPaxosProposeMessage(msg types.Message, pkt transport.Packet) 
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", msg)
 	}
+	a.mu.Lock()
 	if paxosProposeMsg.Step != a.step || paxosProposeMsg.ID != a.maxId {
+		a.mu.Unlock()
 		return nil
 	}
 	// ACCEPT response
 	a.acceptedID = paxosProposeMsg.ID
 	a.acceptedValue = &paxosProposeMsg.Value
+	a.mu.Unlock()
 	acceptMsg := types.PaxosAcceptMessage{
 		Step:  paxosProposeMsg.Step,
 		ID:    paxosProposeMsg.ID,
@@ -389,19 +396,21 @@ func (n *node) ExecPaxosAcceptMessage(msg types.Message, pkt transport.Packet) e
 	}
 	if int(p.nbResponses) >= p.conf.PaxosThreshold(p.conf.TotalPeers) {
 		// consensus is reached!
-		log.Info().Msgf("%v: consensus reached", n.conf.Socket.GetAddress())
 		v := p.proposedValue
 		if p.acceptedValue != nil {
 			v = p.acceptedValue
 		}
 		p.mu.Unlock()
+		if v == nil {
+			return nil
+		}
+		log.Info().Msgf("block: %v", v.Filename)
 		block, err := n.tlc.NewBlock(v)
 		if err != nil {
 			return err
 		}
 		go n.tlc.SendTLC(block)
 	} else {
-		log.Info().Msgf("%v: consensus not reached %v<%v", n.conf.Socket.GetAddress(), int(p.nbResponses), p.conf.PaxosThreshold(p.conf.TotalPeers))
 		p.mu.Unlock()
 	}
 	return nil
@@ -423,17 +432,11 @@ func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
 	v, exist := tlc.Resp[tlcMsg.Step]
 	if !exist {
 		v.nb = 1
-		log.Error().Msgf("new store value: %v for step %v", tlcMsg.Block.Hash, tlcMsg.Step)
 		v.value = tlcMsg.Block
 		tlc.Resp[tlcMsg.Step] = v
 	} else {
 		v.nb++
 		tlc.Resp[tlcMsg.Step] = v
-		log.Error().Msgf("exist store value: %v for step %v", tlcMsg.Block.Hash, tlcMsg.Step)
-		if !bytes.Equal(v.value.Hash, tlcMsg.Block.Hash) {
-			tlc.mu.Unlock()
-			return xerrors.Errorf("not the same block for the same tlc step: %v != %v for step %v", v.value.Hash, tlcMsg.Block.Hash, tlcMsg.Step)
-		}
 	}
 	// the rest of the work is done on our current step
 	vCurr, existCurr := tlc.Resp[tlc.step]
@@ -449,11 +452,15 @@ func (tlc *TLC) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
 			return err
 		}
 		// step 3
+		tlc.mu.Lock()
 		if !tlc.broadcasted {
+			tlc.mu.Unlock()
 			err = tlc.SendTLC(tlcMsg.Block)
 			if err != nil {
 				return err
 			}
+		} else {
+			tlc.mu.Unlock()
 		}
 		// step 4
 		tlc.NextStep()

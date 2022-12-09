@@ -1,0 +1,42 @@
+default:
+  image: golang:1.19
+
+# Run everything in parallel in the same stage
+stages:
+  - check
+
+lint:
+  stage: check
+  script: make lint
+
+test_unit_hw0:
+  stage: check
+  script: make test_unit_hw0
+
+test_unit_hw1:
+  stage: check
+  script: make test_unit_hw1
+
+test_unit_hw2:
+  stage: check
+  script: make test_unit_hw2
+
+test_unit_hw3:
+  stage: check
+  script: make test_unit_hw3
+
+test_int_hw0:
+  stage: check
+  script: make test_int_hw0
+
+test_int_hw1:
+  stage: check
+  script: make test_int_hw1
+
+test_int_hw2:
+  stage: check
+  script: make test_int_hw2
+
+test_int_hw3:
+  stage: check
+  script: make test_int_hw3

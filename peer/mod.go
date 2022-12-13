@@ -50,7 +50,7 @@ type Configuration struct {
 	EmpeerThreshold uint
 
 	// EmpeerTimeout is the timeout after which we need to resend request for computation
-	// Default: 3s
+	// Default: 1s
 	EmpeerTimeout time.Duration
 
 	// ContinueMongering defines the chance to send the rumor to a random peer

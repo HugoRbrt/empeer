@@ -169,7 +169,7 @@ func newConfigTemplate() configTemplate {
 
 		AckTimeout:        time.Second * 3,
 		EmpeerThreshold:   5,
-		EmpeerTimeout:     time.Second * 3,
+		EmpeerTimeout:     time.Second,
 		ContinueMongering: 0.5,
 
 		chunkSize: 8192,

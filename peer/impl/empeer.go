@@ -6,6 +6,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
+	"math"
 	"sync"
 	"time"
 )
@@ -20,12 +21,12 @@ func (e *Empeer) Init(n *node) {
 }
 
 type MergeSort struct {
-	alreadytryNeighbor []string
+	alreadytryNeighbor map[string][]string
 	mu                 sync.Mutex
 }
 
 func (ms *MergeSort) Init(n *node) {
-	ms.alreadytryNeighbor = append(ms.alreadytryNeighbor, n.conf.Socket.GetAddress())
+	ms.alreadytryNeighbor = make(map[string][]string)
 }
 
 // MASTER VIEW
@@ -36,7 +37,6 @@ func (n *node) MergeSort(data []int) (error, []int) {
 	if uint(len(data)) <= n.conf.EmpeerThreshold {
 		return nil, n.ComputeLocally(data)
 	}
-	log.Info().Msgf("div computation")
 	// divide computation
 	middle := len(data) / 2
 	data1 := data[:middle]
@@ -45,8 +45,10 @@ func (n *node) MergeSort(data []int) (error, []int) {
 	result1 := make(chan []int)
 	result2 := make(chan []int)
 	// send instructions
+	instrNb := xid.New().String()
+	n.empeer.ms.alreadytryNeighbor[instrNb] = []string{n.conf.Socket.GetAddress()}
 	go func(c chan error) {
-		e, r1 := n.SendComputation(data1)
+		e, r1 := n.SendComputation(data1, instrNb)
 		if e != nil {
 			c <- e
 		} else {
@@ -54,7 +56,7 @@ func (n *node) MergeSort(data []int) (error, []int) {
 		}
 	}(errs)
 	go func(c chan error) {
-		e, r2 := n.SendComputation(data2)
+		e, r2 := n.SendComputation(data2, instrNb)
 		if e != nil {
 			c <- e
 		} else {
@@ -81,25 +83,23 @@ func (n *node) MergeSort(data []int) (error, []int) {
 }
 
 // SendComputation send a request to neighbors to sort the data, return sorted result
-func (n *node) SendComputation(data []int) (error, []int) {
+func (n *node) SendComputation(data []int, instructionNb string) (error, []int) {
 	var err error
 	var result []int
 	err = transport.TimeoutError(0)
 	for err == transport.TimeoutError(0) {
 		// while we don't have any response, we retry with another neighbor
 		n.empeer.ms.mu.Lock()
-		log.Info().Msgf("already try: %s", n.empeer.ms.alreadytryNeighbor)
-		ok, neighbor := n.table.GetRandomNeighbors(n.empeer.ms.alreadytryNeighbor)
+		ok, neighbor := n.table.GetRandomNeighbors(n.empeer.ms.alreadytryNeighbor[instructionNb])
 		if !ok {
 			// if no neighbor was found: do nothing
 			n.empeer.ms.mu.Unlock()
 			return errors.New("not enough neighbor"), nil
 		}
-		n.empeer.ms.alreadytryNeighbor = append(n.empeer.ms.alreadytryNeighbor, neighbor)
+		n.empeer.ms.alreadytryNeighbor[instructionNb] = append(n.empeer.ms.alreadytryNeighbor[instructionNb], neighbor)
 		n.empeer.ms.mu.Unlock()
 		err, result = n.TrySendComputation(data, neighbor)
 	}
-	log.Info().Msgf("err: %s", err)
 	return err, result
 }
 
@@ -132,14 +132,11 @@ func (n *node) TrySendComputation(data []int, neighbor string) (error, []int) {
 	}
 	//wait the response
 	n.waitEmpeer.requestNotif(msg.PacketID)
-	log.Info().Msgf("send with packetId: %s", msg.PacketID)
 	select {
 	case res := <-n.waitEmpeer.waitNotif(msg.PacketID):
 		// if result is received: return it
-		log.Info().Msgf("result obtain: %s", res)
 		return nil, res
 	case <-time.After(timeout): // resend the message to another neighbor
-		log.Info().Msgf("temps écoulé de %s", timeout)
 		return transport.TimeoutError(0), nil
 	}
 }
@@ -173,9 +170,7 @@ func (n *node) MergeData(left []int, right []int) (result []int) {
 }
 
 func (n *node) ComputeTimeOut(length int) time.Duration {
-	return time.Second * 2
-	//treeHeight := math.Log(float64(length)) / math.Log(2)
-	//return n.conf.EmpeerTimeout * (time.Second * time.Duration(int(math.Pow(2, treeHeight))))
+	return n.conf.EmpeerTimeout * time.Duration(math.RoundToEven(float64(length)*math.Log(float64(length))/float64(n.conf.EmpeerThreshold)))
 }
 
 // SLAVE VIEW
@@ -204,14 +199,55 @@ func (n *node) ComputeLocally(data []int) []int {
 }
 
 func (n *node) ComputeEmpeer(instructionMsg types.InstructionMessage, master string) error {
+	data := instructionMsg.Data
 	// process computation locally if data is small enough
 	if uint(len(instructionMsg.Data)) <= n.conf.EmpeerThreshold {
 		result := n.ComputeLocally(instructionMsg.Data)
 		return n.SendResponse(result, instructionMsg, master)
 	}
-	log.Info().Msgf("deep merge sort not already implemented")
-	return nil
-
+	// divide computation
+	middle := len(data) / 2
+	data1 := data[:middle]
+	data2 := data[middle:]
+	errs := make(chan error)
+	result1 := make(chan []int)
+	result2 := make(chan []int)
+	// send instructions
+	n.empeer.ms.alreadytryNeighbor[instructionMsg.PacketID] = []string{n.conf.Socket.GetAddress()}
+	go func(c chan error) {
+		e, r1 := n.SendComputation(data1, instructionMsg.PacketID)
+		if e != nil {
+			c <- e
+		} else {
+			result1 <- r1
+		}
+	}(errs)
+	go func(c chan error) {
+		e, r2 := n.SendComputation(data2, instructionMsg.PacketID)
+		if e != nil {
+			c <- e
+		} else {
+			result2 <- r2
+		}
+	}(errs)
+	// handle errors and get the result
+	nbRes := 0
+	var r1 []int
+	var r2 []int
+	for nbRes < 2 {
+		select {
+		case r1 = <-result1:
+			nbRes++
+		case r2 = <-result2:
+			nbRes++
+		case e := <-errs:
+			log.Error().Msgf(e.Error())
+			return e
+		default:
+		}
+	}
+	result := n.MergeData(r1, r2)
+	return n.SendResponse(result, instructionMsg, master)
 }
 
 func (n *node) SendResponse(sortedData []int, instructionMsg types.InstructionMessage, origin string) error {

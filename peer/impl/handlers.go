@@ -473,7 +473,6 @@ func (n *node) ExecInstructionMessage(msg types.Message, pkt transport.Packet) e
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", instrMsg)
 	}
-	log.Info().Msgf("%s: instruction obtained", n.conf.Socket.GetAddress())
 	go func() {
 		err := n.ComputeEmpeer(*instrMsg, pkt.Header.Source)
 		if err != nil {
@@ -489,7 +488,6 @@ func (n *node) ExecResultMessage(msg types.Message, pkt transport.Packet) error 
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", resMsg)
 	}
-	log.Info().Msgf("%s: result obtained with ID:%s", n.conf.Socket.GetAddress(), resMsg.PacketID)
 	n.waitEmpeer.signalNotif(resMsg.PacketID, resMsg.SortData)
 	return nil
 }

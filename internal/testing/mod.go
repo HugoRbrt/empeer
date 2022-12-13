@@ -138,6 +138,8 @@ type configTemplate struct {
 	HeartbeatInterval   time.Duration
 
 	AckTimeout        time.Duration
+	EmpeerThreshold   uint
+	EmpeerTimeout     time.Duration
 	ContinueMongering float64
 
 	chunkSize uint
@@ -166,6 +168,8 @@ func newConfigTemplate() configTemplate {
 		HeartbeatInterval:   0,
 
 		AckTimeout:        time.Second * 3,
+		EmpeerThreshold:   5,
+		EmpeerTimeout:     time.Second * 3,
 		ContinueMongering: 0.5,
 
 		chunkSize: 8192,
@@ -320,6 +324,8 @@ func NewTestNode(t require.TestingT, f peer.Factory, trans transport.Transport,
 	config.PaxosThreshold = template.paxosThreshold
 	config.PaxosID = template.paxosID
 	config.PaxosProposerRetry = template.paxosProposerRetry
+	config.EmpeerThreshold = template.EmpeerThreshold
+	config.EmpeerTimeout = template.EmpeerTimeout
 
 	node := f(config)
 
@@ -411,6 +417,10 @@ func (t TestNode) GetChatMsgs() []*types.ChatMessage {
 // GetStorage returns the storage provided to the node.
 func (t TestNode) GetStorage() storage.Storage {
 	return t.config.Storage
+}
+
+func (t TestNode) MergeSort(data []int) (error, []int) {
+	return t.Peer.MergeSort(data)
 }
 
 // Status allows to check if something has been called or not.

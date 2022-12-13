@@ -33,6 +33,8 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.table.SetEntry(node.conf.Socket.GetAddress(), node.conf.Socket.GetAddress())
 	// create a new context which allows goroutine to know if Stop() is call
 	node.ctx, node.cancel = context.WithCancel(context.Background())
+	node.empeer.Init(&node)
+	node.waitEmpeer.Init()
 	return &node
 }
 
@@ -64,6 +66,10 @@ type node struct {
 	// Consensus attributes
 	// acceptor role
 	tlc *TLC
+
+	//Empeer attributes
+	empeer     Empeer
+	waitEmpeer NotificationEmpeer
 }
 
 // HOMEWORK 0
@@ -86,6 +92,8 @@ func (n *node) Start() error {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosProposeMessage{}, n.ExecPaxosProposeMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.PaxosAcceptMessage{}, n.ExecPaxosAcceptMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.TLCMessage{}, n.ExecTLCMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.InstructionMessage{}, n.ExecInstructionMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.ResultMessage{}, n.ExecResultMessage)
 
 	// we signal when the goroutine starts and when it ends
 	n.wg.Add(1)

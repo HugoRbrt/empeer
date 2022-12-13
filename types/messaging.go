@@ -186,6 +186,48 @@ func (p PrivateMessage) HTML() string {
 }
 
 // -----------------------------------------------------------------------------
+// InstructionMessage
+
+// NewEmpty implements types.Message.
+func (i InstructionMessage) NewEmpty() Message {
+	return &InstructionMessage{}
+}
+
+// Name implements types.Message.
+func (i InstructionMessage) Name() string {
+	return "instructionMessage"
+}
+
+// String implements types.Message.
+func (i InstructionMessage) String() string {
+	return fmt.Sprintf("instruction message number %s", i.PacketID)
+}
+
+// HTML implements types.Message.
+func (i InstructionMessage) HTML() string {
+	return fmt.Sprintf("instruction message number %s", i.PacketID)
+}
+
+// -----------------------------------------------------------------------------
+// ResultMessage
+
+func (r ResultMessage) NewEmpty() Message {
+	return &ResultMessage{}
+}
+
+func (r ResultMessage) Name() string {
+	return "ResultMessage"
+}
+
+func (r ResultMessage) String() string {
+	return fmt.Sprintf("instruction message number %s", r.PacketID)
+}
+
+func (r ResultMessage) HTML() string {
+	return fmt.Sprintf("instruction message number %s", r.PacketID)
+}
+
+// -----------------------------------------------------------------------------
 // utility functions
 
 // RumorByOrigin sorts rumor by origin

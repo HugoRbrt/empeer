@@ -66,6 +66,9 @@ type DataSharing interface {
 	// SearchReplyMessages received. Returns an empty string if nothing was
 	// found.
 	SearchFirst(pattern regexp.Regexp, conf ExpandingRing) (name string, err error)
+
+	// MergeSort launch the distributed algorithm of merge sort
+	MergeSort(data []int) (error, []int)
 }
 
 // Catalog tells, for a given piece of data referenced by a key, a bag of peers

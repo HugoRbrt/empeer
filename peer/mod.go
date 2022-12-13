@@ -45,6 +45,14 @@ type Configuration struct {
 	// Default: 3s
 	AckTimeout time.Duration
 
+	// EmpeerThreshold is the maximum data size that can be processed locally
+	// Default: 5
+	EmpeerThreshold uint
+
+	// EmpeerTimeout is the timeout after which we need to resend request for computation
+	// Default: 3s
+	EmpeerTimeout time.Duration
+
 	// ContinueMongering defines the chance to send the rumor to a random peer
 	// in case both peers are synced. 1 means it will continue, 0.5 means there
 	// is a 50% chance, and 0 no chance.

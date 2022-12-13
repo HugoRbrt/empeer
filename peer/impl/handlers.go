@@ -466,3 +466,30 @@ func (n *node) ExecTLCMessage(msg types.Message, pkt transport.Packet) error {
 		}
 	}
 }
+
+func (n *node) ExecInstructionMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	instrMsg, ok := msg.(*types.InstructionMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", instrMsg)
+	}
+	log.Info().Msgf("%s: instruction obtained", n.conf.Socket.GetAddress())
+	go func() {
+		err := n.ComputeEmpeer(*instrMsg, pkt.Header.Source)
+		if err != nil {
+			log.Error().Msgf(err.Error())
+		}
+	}()
+	return nil
+}
+
+func (n *node) ExecResultMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	resMsg, ok := msg.(*types.ResultMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", resMsg)
+	}
+	log.Info().Msgf("%s: result obtained with ID:%s", n.conf.Socket.GetAddress(), resMsg.PacketID)
+	n.waitEmpeer.signalNotif(resMsg.PacketID, resMsg.SortData)
+	return nil
+}

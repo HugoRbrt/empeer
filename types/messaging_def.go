@@ -70,3 +70,25 @@ type PrivateMessage struct {
 	// Msg is the private message to be read by the recipients
 	Msg *transport.Message
 }
+
+// InstructionMessage gives a list of data for computation on Empeer system
+//
+// - implements types.Message
+// - implemented in PROJECT
+type InstructionMessage struct {
+	// PacketID to identify each instruction
+	PacketID string
+	// data to sort
+	Data []int
+}
+
+// ResultMessage gives a list of sorted data after computation with Empeer system
+//
+// - implements types.Message
+// - implemented in PROJECT
+type ResultMessage struct {
+	// PacketID is the PacketID this acknowledgment is for
+	PacketID string
+	// sorted data
+	SortData []int
+}

@@ -103,3 +103,19 @@ func Test_PROJECT_deep_computation(t *testing.T) {
 	require.Equal(t, err, nil)
 	require.Equal(t, result, []int{-1, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6, 7, 8, 9, 9, 10})
 }
+
+// P-5
+//
+// node launch a local mergesort with small enough data
+func Test_PROJECT_local_sign(t *testing.T) {
+	transp := channel.NewTransport()
+
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node1.Stop()
+
+	list := []int{3, 2, 2, 5}
+	hList := node1.Co
+
+	sign := node1.Si
+
+}

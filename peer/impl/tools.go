@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"crypto/rsa"
 	"github.com/rs/xid"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/storage"
@@ -581,4 +582,51 @@ func ContainFullyKnown(files []types.FileInfo) string {
 		}
 	}
 	return ""
+}
+
+/**/
+// ConcurrentRouteTable define a safe way to access the RoutingTable.
+type PublicKeyExchangeMap struct {
+	R  map[string]*rsa.PublicKey
+	mu sync.Mutex
+}
+
+// Init initialize processedRumors
+func (sr *PublicKeyExchangeMap) Init() {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	(*sr).R = make(map[string]*rsa.PublicKey)
+}
+
+// SetEntry set a routing entry and override it if the entry already exist
+func (sr *PublicKeyExchangeMap) SetEntry(key string, pKey *rsa.PublicKey) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	sr.R[key] = pKey
+}
+
+// DeleteEntry delete a routing entry or do nothing if the entry doesn't exist
+func (sr *PublicKeyExchangeMap) DeleteEntry(key string) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	delete(sr.R, key)
+}
+
+// Copy return a copy of the RoutingTable
+func (sr *PublicKeyExchangeMap) Copy() map[string]*rsa.PublicKey {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	tableCopy := make(map[string]*rsa.PublicKey)
+	for key, value := range sr.R {
+		tableCopy[key] = value
+	}
+	return tableCopy
+}
+
+// Get return the value and boolean (if the key exist or not) corresponding to the key value in routing table
+func (sr *PublicKeyExchangeMap) Get(key string) (*rsa.PublicKey, bool) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	value, b := sr.R[key]
+	return value, b
 }

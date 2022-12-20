@@ -228,6 +228,25 @@ func (r ResultMessage) HTML() string {
 }
 
 // -----------------------------------------------------------------------------
+// PublicKeyExchange
+
+func (r PublicKeyExchange) NewEmpty() Message {
+	return &PublicKeyExchange{}
+}
+
+func (r PublicKeyExchange) Name() string {
+	return "PublicKeyExchange"
+}
+
+func (r PublicKeyExchange) String() string {
+	return fmt.Sprintf("instruction message number %s", r.PublicKey)
+}
+
+func (r PublicKeyExchange) HTML() string {
+	return fmt.Sprintf("instruction message number %s", r.PublicKey)
+}
+
+// -----------------------------------------------------------------------------
 // utility functions
 
 // RumorByOrigin sorts rumor by origin

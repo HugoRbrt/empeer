@@ -1,6 +1,9 @@
 package types
 
-import "go.dedis.ch/cs438/transport"
+import (
+	"crypto/rsa"
+	"go.dedis.ch/cs438/transport"
+)
 
 // ChatMessage is a message sent to exchange text messages between nodes.
 //
@@ -90,5 +93,11 @@ type ResultMessage struct {
 	// PacketID is the PacketID this acknowledgment is for
 	PacketID string
 	// sorted data
-	SortData []int
+	SortData  []int
+	Signature []byte
+}
+
+type PublicKeyExchange struct {
+	// PacketID is the PacketID this acknowledgment is for
+	PublicKey *rsa.PublicKey
 }

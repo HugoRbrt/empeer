@@ -488,6 +488,23 @@ func (n *node) ExecResultMessage(msg types.Message, pkt transport.Packet) error 
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", resMsg)
 	}
-	n.waitEmpeer.signalNotif(resMsg.PacketID, resMsg.SortData)
+	data := NotificationEmpeerData{
+		arr:       resMsg.SortData,
+		signature: resMsg.Signature,
+		ip:        pkt.Header.Source,
+	}
+	n.waitEmpeer.signalNotif(resMsg.PacketID, data)
+	return nil
+}
+
+func (n *node) ExecPublicKeyExchange(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	resMsg, ok := msg.(*types.PublicKeyExchange)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", resMsg)
+	}
+
+	n.PublicKeyMap.SetEntry(pkt.Header.Source, resMsg.PublicKey)
+
 	return nil
 }

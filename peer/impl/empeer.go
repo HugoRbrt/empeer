@@ -134,8 +134,18 @@ func (n *node) TrySendComputation(data []int, neighbor string) (error, []int) {
 	n.waitEmpeer.requestNotif(msg.PacketID)
 	select {
 	case res := <-n.waitEmpeer.waitNotif(msg.PacketID):
-		// if result is received: return it
-		return nil, res
+		arr := res.arr
+		h := n.ComputeHashKeyForList(arr)
+		pubKey, ok := n.PublicKeyMap.Get(res.ip)
+		if !ok {
+			return errors.New("public key not found"), nil
+		}
+
+		if !n.VerifySignature(res.signature, h, pubKey) {
+			return errors.New("signature not valid"), nil
+		}
+
+		return nil, arr
 	case <-time.After(timeout): // resend the message to another neighbor
 		return transport.TimeoutError(0), nil
 	}
@@ -251,11 +261,18 @@ func (n *node) ComputeEmpeer(instructionMsg types.InstructionMessage, master str
 }
 
 func (n *node) SendResponse(sortedData []int, instructionMsg types.InstructionMessage, origin string) error {
+	// compute hash of list of integers
+	hash := n.ComputeHashKeyForList(sortedData)
+	// sign the hash
+	signature := n.SignHash(hash, n.PrivateKey)
+
 	// create the message
 	response := types.ResultMessage{
-		PacketID: instructionMsg.PacketID,
-		SortData: sortedData,
+		PacketID:  instructionMsg.PacketID,
+		SortData:  sortedData,
+		Signature: signature,
 	}
+
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(response)
 	if err != nil {
 		return err

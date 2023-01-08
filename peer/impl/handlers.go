@@ -542,11 +542,18 @@ func (n *node) ExecPublicKeyExchange(msg types.Message, pkt transport.Packet) er
 
 func (n *node) MRInstructionMessage(msg types.Message, pkt transport.Packet) error {
 	// cast the message to its actual type. You assume it is the right type.
-	resMsg, ok := msg.(*types.MRInstructionMessage)
+	instrMsg, ok := msg.(*types.MRInstructionMessage)
 	if !ok {
-		return xerrors.Errorf("wrong type: %T", resMsg)
+		return xerrors.Errorf("wrong type: %T", instrMsg)
 	}
-	log.Info().Msgf(resMsg.String())
+	log.Info().Msgf(instrMsg.String())
+	data := instrMsg.Data
+	nbReducers := len(instrMsg.Reducers)
+	dictionaries := n.Map(nbReducers, data)
+	err := n.DistributeToReducers(dictionaries, instrMsg.Reducers, instrMsg.RequestID)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -556,6 +563,6 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", resMsg)
 	}
-	log.Info().Msgf(resMsg.String())
+	log.Info().Msgf(n.conf.Socket.GetAddress() + ": " + resMsg.String())
 	return nil
 }

@@ -276,11 +276,11 @@ func (r MRResponseMessage) Name() string {
 }
 
 func (r MRResponseMessage) String() string {
-	return fmt.Sprintf("mapReduce response message number %s", r.requestID)
+	return fmt.Sprintf("mapReduce response message number %s with data %s", r.RequestID, r.SortedData)
 }
 
 func (r MRResponseMessage) HTML() string {
-	return fmt.Sprintf("mapReduce instruction message number %s", r.requestID)
+	return fmt.Sprintf("mapReduce instruction message number %s", r.RequestID)
 }
 
 // -----------------------------------------------------------------------------

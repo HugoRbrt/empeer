@@ -498,7 +498,10 @@ func (n *node) MRInstructionMessage(msg types.Message, pkt transport.Packet) err
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", instrMsg)
 	}
-	log.Info().Msgf(instrMsg.String())
+	//log.Info().Msgf(instrMsg.String())
+	//prepare statement for reducer
+	n.empeer.mr.SetParam(instrMsg.RequestID, len(instrMsg.Reducers), pkt.Header.Source)
+	// compute and distributes result to reducers
 	data := instrMsg.Data
 	nbReducers := len(instrMsg.Reducers)
 	dictionaries := n.Map(nbReducers, data)
@@ -515,6 +518,31 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", resMsg)
 	}
-	log.Info().Msgf(n.conf.Socket.GetAddress() + ": " + resMsg.String())
+	//log.Info().Msgf(n.conf.Socket.GetAddress() + ": " + resMsg.String())
+	// store de result
+	allDataReceived := n.empeer.mr.DataReceived(resMsg.RequestID, resMsg.SortedData)
+	if allDataReceived {
+		log.Info().Msgf("all data received")
+		//concat all data
+		result := n.ConcatResults(resMsg.RequestID)
+		initiator := n.empeer.mr.Initiator(resMsg.RequestID)
+		if initiator == n.conf.Socket.GetAddress() {
+			//if i am the initiator: return the result
+			log.Info().Msgf("result: %s", result)
+		} else {
+			//if i am a reducer: send the result to the initiator
+			msg := types.MRResponseMessage{RequestID: resMsg.RequestID, SortedData: result}
+			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+			if err != nil {
+				return err
+			}
+			header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), initiator, 0)
+			pkt := transport.Packet{Header: &header, Msg: &transMsg}
+			err = n.conf.Socket.Send(initiator, pkt, time.Millisecond*1000)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }

@@ -13,11 +13,13 @@ import (
 
 type Empeer struct {
 	ms MergeSort
+	mr MapReduce
 }
 
 // Init initialize Empeer
 func (e *Empeer) Init(n *node) {
 	e.ms.Init(n)
+	e.mr.Init(n)
 }
 
 // MERGE SORT
@@ -278,6 +280,46 @@ func (n *node) SendResponse(sortedData []int, instructionMsg types.InstructionMe
 
 // MAP REDUCE
 
+type MapReduceParameter struct {
+	nbReducer int
+	initiator string
+}
+
+type MapReduce struct {
+	// map a RequestID to corresponding parameters (number of reducer for the request and if I am the initiator)
+	params       map[string]MapReduceParameter
+	receivedData map[string][]map[string]int
+	mu           sync.Mutex
+}
+
+func (mr *MapReduce) Init(n *node) {
+	mr.params = make(map[string]MapReduceParameter)
+	mr.receivedData = make(map[string][]map[string]int)
+}
+
+func (mr *MapReduce) SetParam(requestID string, nbReducer int, initiator string) {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	var param MapReduceParameter
+	param.nbReducer = nbReducer
+	param.initiator = initiator
+	mr.params[requestID] = param
+}
+
+// DataReceived keep received data in memory and return if all the data for this request was received
+func (mr *MapReduce) DataReceived(requestID string, data map[string]int) bool {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	mr.receivedData[requestID] = append(mr.receivedData[requestID], data)
+	return len(mr.receivedData[requestID]) == mr.params[requestID].nbReducer
+}
+
+func (mr *MapReduce) Initiator(requestID string) string {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	return mr.params[requestID].initiator
+}
+
 // MapReduce begin the mapreduce algorithm with nbMapper mappers on data
 func (n *node) MapReduce(nbMapper int, data []string) error {
 	return n.SplitSendData(nbMapper, data)
@@ -299,9 +341,9 @@ func (n *node) SplitSendData(nbMapper int, data []string) error {
 	listData := n.empeer.splitList(data, nbMapper)
 	requestID := xid.New().String()
 	for numMapper, mapper := range mappers {
-		// TODO: choose which data to send
+		//choose which data to send
 		data := listData[numMapper]
-		//TODO: send data to mapper
+		//send data to mapper
 		msg := types.MRInstructionMessage{RequestID: requestID, Reducers: mappers, Data: data}
 		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
 		if err != nil {
@@ -314,6 +356,8 @@ func (n *node) SplitSendData(nbMapper int, data []string) error {
 			return err
 		}
 	}
+	//prepare statement for reducer
+	n.empeer.mr.SetParam(requestID, nbMapper, n.conf.Socket.GetAddress())
 	return nil
 }
 
@@ -344,7 +388,7 @@ func (n *node) Map(nbReducers int, data []string) []map[string]int {
 func (n *node) DistributeToReducers(dicts []map[string]int, reducers []string, requestID string) error {
 	for num, dict := range dicts {
 		reducer := reducers[num]
-		//TODO: send data to the corresponding reducer
+		//send data to the corresponding reducer
 		msg := types.MRResponseMessage{RequestID: requestID, SortedData: dict}
 		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
 		if err != nil {
@@ -358,4 +402,18 @@ func (n *node) DistributeToReducers(dicts []map[string]int, reducers []string, r
 		}
 	}
 	return nil
+}
+
+// ConcatResults concatenate all received dictionaries for the corresponding requestID
+func (n *node) ConcatResults(requestID string) map[string]int {
+	n.empeer.mr.mu.Lock()
+	defer n.empeer.mr.mu.Unlock()
+	dictionaries := n.empeer.mr.receivedData[requestID]
+	result := make(map[string]int)
+	for _, dict := range dictionaries {
+		for key, value := range dict {
+			result[key] += value
+		}
+	}
+	return result
 }

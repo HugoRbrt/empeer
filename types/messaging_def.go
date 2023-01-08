@@ -112,7 +112,7 @@ type MRInstructionMessage struct {
 // - implemented in PROJECT
 type MRResponseMessage struct {
 	// requestID is the ID for the MapReduce request
-	requestID string
+	RequestID string
 	// data is a list of words to count
-	sortedData map[string]int
+	SortedData map[string]int
 }

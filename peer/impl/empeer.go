@@ -317,12 +317,12 @@ func (n *node) SplitSendData(nbMapper int, data []string) error {
 	return nil
 }
 
-func (n *node) Map(nbMapper int, data []string) []map[string]int {
-	listMaps := make([]map[string]int, nbMapper)
+func (n *node) Map(nbReducers int, data []string) []map[string]int {
+	listMaps := make([]map[string]int, nbReducers)
 	var keys []string
 	// 97 is the value for 'a', 26 is the number of letters in the alphabet
-	widthReducer := 27 / nbMapper
-	if 27%nbMapper != 0 {
+	widthReducer := 27 / nbReducers
+	if 27%nbReducers != 0 {
 		widthReducer += 1
 	}
 	for _, d := range data {
@@ -339,4 +339,23 @@ func (n *node) Map(nbMapper int, data []string) []map[string]int {
 		}
 	}
 	return listMaps
+}
+
+func (n *node) DistributeToReducers(dicts []map[string]int, reducers []string, requestID string) error {
+	for num, dict := range dicts {
+		reducer := reducers[num]
+		//TODO: send data to the corresponding reducer
+		msg := types.MRResponseMessage{RequestID: requestID, SortedData: dict}
+		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+		if err != nil {
+			return err
+		}
+		header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), reducer, 0)
+		pkt := transport.Packet{Header: &header, Msg: &transMsg}
+		err = n.conf.Socket.Send(reducer, pkt, time.Millisecond*1000)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

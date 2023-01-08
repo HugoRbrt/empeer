@@ -228,6 +228,44 @@ func (r ResultMessage) HTML() string {
 }
 
 // -----------------------------------------------------------------------------
+// MRInstructionMessage
+
+func (r MRInstructionMessage) NewEmpty() Message {
+	return &MRInstructionMessage{}
+}
+
+func (r MRInstructionMessage) Name() string {
+	return "MRInstructionMessage"
+}
+
+func (r MRInstructionMessage) String() string {
+	return fmt.Sprintf("mapReduce instruction message number %s with data %s", r.RequestID, r.Data)
+}
+
+func (r MRInstructionMessage) HTML() string {
+	return fmt.Sprintf("mapReduce instruction message number %s", r.RequestID)
+}
+
+// -----------------------------------------------------------------------------
+// MapReduceResponse
+
+func (r MRResponseMessage) NewEmpty() Message {
+	return &MRResponseMessage{}
+}
+
+func (r MRResponseMessage) Name() string {
+	return "MRResponseMessage"
+}
+
+func (r MRResponseMessage) String() string {
+	return fmt.Sprintf("mapReduce response message number %s", r.requestID)
+}
+
+func (r MRResponseMessage) HTML() string {
+	return fmt.Sprintf("mapReduce instruction message number %s", r.requestID)
+}
+
+// -----------------------------------------------------------------------------
 // utility functions
 
 // RumorByOrigin sorts rumor by origin

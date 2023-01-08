@@ -20,6 +20,8 @@ func (e *Empeer) Init(n *node) {
 	e.ms.Init(n)
 }
 
+// MERGE SORT
+
 type MergeSort struct {
 	alreadytryNeighbor map[string][]string
 	mu                 sync.Mutex
@@ -29,7 +31,7 @@ func (ms *MergeSort) Init(n *node) {
 	ms.alreadytryNeighbor = make(map[string][]string)
 }
 
-// MASTER VIEW
+// Master view
 
 // MergeSort define the distributed algorithm for a merge sort
 func (n *node) MergeSort(data []int) (error, []int) {
@@ -173,7 +175,7 @@ func (n *node) ComputeTimeOut(length int) time.Duration {
 	return n.conf.EmpeerTimeout * time.Duration(math.RoundToEven(float64(length)*math.Log(float64(length))/float64(n.conf.EmpeerThreshold)))
 }
 
-// SLAVE VIEW
+// Slave view
 
 func (n *node) ComputeLocally(data []int) []int {
 	var num = len(data)
@@ -272,4 +274,69 @@ func (n *node) SendResponse(sortedData []int, instructionMsg types.InstructionMe
 	pkt := transport.Packet{Header: &header, Msg: &transPrivMsg}
 	// send the message
 	return n.conf.Socket.Send(origin, pkt, time.Millisecond*1000)
+}
+
+// MAP REDUCE
+
+// MapReduce begin the mapreduce algorithm with nbMapper mappers on data
+func (n *node) MapReduce(nbMapper int, data []string) error {
+	return n.SplitSendData(nbMapper, data)
+}
+
+// SplitSendData split data and send to nbMapper =/= neighbors randomly
+func (n *node) SplitSendData(nbMapper int, data []string) error {
+	// get nbMapper =/= neighbors
+	var mappers []string
+	for k := 0; k < nbMapper; k++ {
+		ok, neighbor := n.table.GetRandomNeighbors(mappers)
+		if !ok {
+			return errors.New("not enough neighbors")
+		}
+		mappers = append(mappers, neighbor)
+	}
+	// split data list into nbMapper lists
+	// TODO: test function below
+	listData := n.empeer.splitList(data, nbMapper)
+	requestID := xid.New().String()
+	for numMapper, mapper := range mappers {
+		// TODO: choose which data to send
+		data := listData[numMapper]
+		//TODO: send data to mapper
+		msg := types.MRInstructionMessage{RequestID: requestID, Reducers: mappers, Data: data}
+		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+		if err != nil {
+			return err
+		}
+		header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), mapper, 0)
+		pkt := transport.Packet{Header: &header, Msg: &transMsg}
+		err = n.conf.Socket.Send(mapper, pkt, time.Millisecond*1000)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (n *node) Map(nbMapper int, data []string) []map[string]int {
+	listMaps := make([]map[string]int, nbMapper)
+	var keys []string
+	// 97 is the value for 'a', 26 is the number of letters in the alphabet
+	widthReducer := 27 / nbMapper
+	if 27%nbMapper != 0 {
+		widthReducer += 1
+	}
+	for _, d := range data {
+		index := (int(d[0]) - 97) / widthReducer
+		if _, ok := listMaps[index][d]; ok {
+			listMaps[index][d]++
+		} else {
+			correspondingMap := listMaps[index]
+			if correspondingMap == nil {
+				listMaps[index] = make(map[string]int)
+			}
+			listMaps[index][d] = 1
+			keys = append(keys, d)
+		}
+	}
+	return listMaps
 }

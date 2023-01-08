@@ -491,3 +491,23 @@ func (n *node) ExecResultMessage(msg types.Message, pkt transport.Packet) error 
 	n.waitEmpeer.signalNotif(resMsg.PacketID, resMsg.SortData)
 	return nil
 }
+
+func (n *node) MRInstructionMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	resMsg, ok := msg.(*types.MRInstructionMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", resMsg)
+	}
+	log.Info().Msgf(resMsg.String())
+	return nil
+}
+
+func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	resMsg, ok := msg.(*types.MRResponseMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", resMsg)
+	}
+	log.Info().Msgf(resMsg.String())
+	return nil
+}

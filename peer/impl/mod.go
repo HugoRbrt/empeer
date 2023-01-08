@@ -94,6 +94,8 @@ func (n *node) Start() error {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.TLCMessage{}, n.ExecTLCMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.InstructionMessage{}, n.ExecInstructionMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.ResultMessage{}, n.ExecResultMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.MRInstructionMessage{}, n.MRInstructionMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.MRResponseMessage{}, n.MRResponseMessage)
 
 	// we signal when the goroutine starts and when it ends
 	n.wg.Add(1)

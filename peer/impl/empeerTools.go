@@ -42,3 +42,23 @@ func (ne *NotificationEmpeer) signalNotif(pckID string, value []int) {
 	ne.mu.Unlock()
 	channel <- value
 }
+
+// splitList split a given list into a list into nb uniform chunks
+func (e *Empeer) splitList(list []string, nb int) [][]string {
+	var chunks [][]string
+	size := len(list) / nb
+	if len(list)%nb != 0 {
+		size = size + 1
+	}
+	for i := 0; i < len(list); i += size {
+		end := i + size
+		// necessary check to avoid slicing beyond
+		// slice capacity
+		if end > len(list) {
+			end = len(list)
+		}
+		chunks = append(chunks, list[i:end])
+	}
+
+	return chunks
+}

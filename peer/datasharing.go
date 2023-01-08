@@ -69,6 +69,9 @@ type DataSharing interface {
 
 	// MergeSort launch the distributed algorithm of merge sort
 	MergeSort(data []int) (error, []int)
+
+	// MapReduce launch the distributed algorithm of map reduce
+	MapReduce(nbMapper int, data []string) error
 }
 
 // Catalog tells, for a given piece of data referenced by a key, a bag of peers

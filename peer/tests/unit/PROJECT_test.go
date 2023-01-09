@@ -7,6 +7,7 @@ import (
 	"go.dedis.ch/cs438/peer/impl"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/transport/channel"
+	"strconv"
 	"testing"
 )
 
@@ -225,7 +226,7 @@ func Test_PROJECT_counter_test(t *testing.T) {
 
 	err, res := nodes[0].MapReduce(4, data)
 	require.Equal(t, nil, err)
-	fmt.Println(res)
+	printMap(res)
 	require.Equal(t, 5, len(res))
 
 }
@@ -247,4 +248,12 @@ func CreateCompleteNetwork(nbNodes int, t *testing.T, transp transport.Transport
 		}
 	}
 	return listNodes
+}
+
+func printMap(m map[string]int) {
+	println("┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓")
+	for key, value := range m {
+		fmt.Printf("┃ %20s ┃ %5s ┃\n", key, strconv.Itoa(value))
+		println("┠━━━━━━━━━━━━━━━━━━━━━━╋━━━━━━━┫")
+	}
 }

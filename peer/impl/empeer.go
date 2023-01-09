@@ -412,15 +412,21 @@ type MapReduceParameter struct {
 }
 
 type MapReduce struct {
-	// map a RequestID to corresponding parameters (number of reducer for the request and if I am the initiator)
-	params       map[string]MapReduceParameter
+	// params map a RequestID to corresponding parameters (number of reducer for the request and if I am the initiator)
+	params map[string]MapReduceParameter
+	// receivedData store a list of data (every data is a map[string]int) according to its corresponding requestID (string)
 	receivedData map[string][]map[string]int
 	mu           sync.Mutex
+	// isRunning avoids the case where a node wants to saturate the network by sending several mapreduce requests
+	isRunning sync.Mutex
+	// result is the result of mapreduce request
+	result chan map[string]int
 }
 
 func (mr *MapReduce) Init(n *node) {
 	mr.params = make(map[string]MapReduceParameter)
 	mr.receivedData = make(map[string][]map[string]int)
+	mr.result = make(chan map[string]int)
 }
 
 func (mr *MapReduce) SetParam(requestID string, nbReducer int, initiator string) {
@@ -447,8 +453,21 @@ func (mr *MapReduce) Initiator(requestID string) string {
 }
 
 // MapReduce begin the mapreduce algorithm with nbMapper mappers on data
-func (n *node) MapReduce(nbMapper int, data []string) error {
-	return n.SplitSendData(nbMapper, data)
+func (n *node) MapReduce(nbMapper int, data []string) (error, map[string]int) {
+	// signal that a mapreduce begin
+	n.empeer.mr.isRunning.Lock()
+	defer n.empeer.mr.isRunning.Unlock()
+	err := n.SplitSendData(nbMapper, data)
+	if err != nil {
+		return err, nil
+	}
+	// catch the result
+	select {
+	case r := <-n.empeer.mr.result:
+		return nil, r
+	case <-n.ctx.Done():
+		return nil, nil
+	}
 }
 
 // SplitSendData split data and send to nbMapper =/= neighbors randomly
@@ -456,7 +475,7 @@ func (n *node) SplitSendData(nbMapper int, data []string) error {
 	// get nbMapper =/= neighbors
 	var mappers []string
 	for k := 0; k < nbMapper; k++ {
-		ok, neighbor := n.table.GetRandomNeighbors(mappers)
+		ok, neighbor := n.table.GetRandomNeighbors(append(mappers, n.conf.Socket.GetAddress()))
 		if !ok {
 			return errors.New("not enough neighbors")
 		}
@@ -468,6 +487,7 @@ func (n *node) SplitSendData(nbMapper int, data []string) error {
 	requestID := xid.New().String()
 	for numMapper, mapper := range mappers {
 		//choose which data to send
+		log.Info().Msgf("%s", numMapper)
 		data := listData[numMapper]
 		//send data to mapper
 		msg := types.MRInstructionMessage{RequestID: requestID, Reducers: mappers, Data: data}
@@ -516,6 +536,7 @@ func (n *node) DistributeToReducers(dicts []map[string]int, reducers []string, r
 		reducer := reducers[num]
 		//send data to the corresponding reducer
 		msg := types.MRResponseMessage{RequestID: requestID, SortedData: dict}
+		// TODO: Sign msg before sending
 		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
 		if err != nil {
 			return err

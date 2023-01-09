@@ -76,8 +76,6 @@ func Test_PROJECT_semi_deep_computation(t *testing.T) {
 	node3.AddPeer(node1.GetAddr())
 	node3.AddPeer(node2.GetAddr())
 
-	time.Sleep(time.Millisecond * 1000)
-
 	err, result := node1.MergeSort([]int{5, 1, 2, 4, 3, 4, 2, 5, 3, 1, 9, 0})
 	require.Equal(t, nil, err)
 	require.Equal(t, result, []int{0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 9})
@@ -106,8 +104,6 @@ func Test_PROJECT_deep_computation(t *testing.T) {
 	node2.AddPeer(node3.GetAddr())
 	node3.AddPeer(node1.GetAddr())
 	node3.AddPeer(node2.GetAddr())
-
-	time.Sleep(time.Millisecond * 1000)
 
 	err, result := node1.MergeSort([]int{5, 1, 2, 4, 3, 4, 2, 5, 3, 1, 9, 0, 2, 7, 4, 9, 6, 10, 0, -1, 6, 4, 8})
 	require.Equal(t, nil, err)
@@ -193,7 +189,7 @@ func Test_PROJECT_mrSplitSend(t *testing.T) {
 
 	data := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"}
 
-	err := node1.MapReduce(3, data)
+	err, _ := node1.MapReduce(3, data)
 	require.Equal(t, err, nil)
 
 }

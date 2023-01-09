@@ -546,6 +546,8 @@ func (n *node) MRInstructionMessage(msg types.Message, pkt transport.Packet) err
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", instrMsg)
 	}
+	// TODO : send public key to all the reducers
+
 	//log.Info().Msgf(instrMsg.String())
 	//prepare statement for reducer
 	n.empeer.mr.SetParam(instrMsg.RequestID, len(instrMsg.Reducers), pkt.Header.Source)
@@ -568,15 +570,18 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 	}
 	//log.Info().Msgf(n.conf.Socket.GetAddress() + ": " + resMsg.String())
 	// store de result
+
+	// TODO : check the result signature
+
 	allDataReceived := n.empeer.mr.DataReceived(resMsg.RequestID, resMsg.SortedData)
 	if allDataReceived {
-		log.Info().Msgf("all data received")
 		//concat all data
 		result := n.ConcatResults(resMsg.RequestID)
 		initiator := n.empeer.mr.Initiator(resMsg.RequestID)
 		if initiator == n.conf.Socket.GetAddress() {
+			log.Info().Msgf("all data received")
 			//if i am the initiator: return the result
-			log.Info().Msgf("result: %s", result)
+			n.empeer.mr.result <- result
 		} else {
 			//if i am a reducer: send the result to the initiator
 			msg := types.MRResponseMessage{RequestID: resMsg.RequestID, SortedData: result}

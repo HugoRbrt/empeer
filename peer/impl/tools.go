@@ -1,7 +1,9 @@
 package impl
 
 import (
+	"bufio"
 	"crypto/rsa"
+	"fmt"
 	"github.com/rs/xid"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/storage"
@@ -9,6 +11,7 @@ import (
 	"go.dedis.ch/cs438/types"
 	"io"
 	"math/rand"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -631,4 +634,28 @@ func (sr *PublicKeyExchangeMap) Get(key string) (*rsa.PublicKey, bool) {
 	defer sr.mu.Unlock()
 	value, b := sr.R[key]
 	return value, b
+}
+
+func Parser(path string) ([]string, error) {
+	var listOfWords []string
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func(f *os.File) {
+		err := f.Close()
+		if err != nil {
+			fmt.Println(err)
+		}
+	}(f)
+	scanner := bufio.NewScanner(f)
+	scanner.Split(bufio.ScanWords)
+
+	for scanner.Scan() {
+		word := strings.ToLower(scanner.Text())
+		word = regexp.MustCompile(`[^a-zA-Z]+`).ReplaceAllString(word, "")
+		listOfWords = append(listOfWords, word)
+	}
+	return listOfWords, scanner.Err()
+
 }

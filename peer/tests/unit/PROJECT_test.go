@@ -1,13 +1,16 @@
 package unit
 
 import (
-	"github.com/rs/zerolog/log"
-	"github.com/stretchr/testify/require"
-	z "go.dedis.ch/cs438/internal/testing"
-	"go.dedis.ch/cs438/transport/channel"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
+	z "go.dedis.ch/cs438/internal/testing"
+	"go.dedis.ch/cs438/peer/impl"
+	"go.dedis.ch/cs438/transport"
+	"go.dedis.ch/cs438/transport/channel"
 )
 
 // P-1
@@ -459,41 +462,45 @@ func Test_PROJECT_deep_computation_with_consensus_many_malicious(t *testing.T) {
 //
 // ┌───► B
 // A───► C
-func Test_PROJECT_map(t *testing.T) {
-	toMap := func(nbMapper int, data []string) (error, []map[string]int) {
-		listMaps := make([]map[string]int, nbMapper)
-		var keys []string
-		// 97 is the value for 'a', 26 is the number of letters in the alphabet
-		widthReducer := 27 / nbMapper
-		if 27%nbMapper != 0 {
-			widthReducer += 1
-		}
-		log.Info().Msgf("width: " + strconv.Itoa(widthReducer))
-		for _, d := range data {
-			index := (int(d[0]) - 97) / widthReducer
-			if _, ok := listMaps[index][d]; ok {
-				listMaps[index][d]++
-			} else {
-				correspondingMap := listMaps[index]
-				if correspondingMap == nil {
-					listMaps[index] = make(map[string]int)
-				}
-				listMaps[index][d] = 1
-				keys = append(keys, d)
-			}
-		}
-		return nil, listMaps
-	}
+func Test_PROJECT_counter_test(t *testing.T) {
+	transp := channel.NewTransport()
+	filePath := "dataTest/P8.txt"
 
-	data := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"}
+	nodes := CreateCompleteNetwork(5, t, transp)
 
-	err, result := toMap(15, data)
-	for nb, r := range result {
-		log.Info().Msgf("MAPPER n°" + strconv.Itoa(nb))
-		for key, _ := range r {
-			log.Info().Msgf(key + ": " + strconv.Itoa(r[key]))
-		}
-	}
+	data, err := impl.Parser(filePath)
 	require.Equal(t, err, nil)
 
+	err, res := nodes[0].MapReduce(4, data)
+	require.Equal(t, nil, err)
+	printMap(res)
+	require.Equal(t, 5, len(res))
+
+}
+
+// -----------------------------------------------------------------------------
+// Utility functions
+
+func CreateCompleteNetwork(nbNodes int, t *testing.T, transp transport.Transport) (listNodes []z.TestNode) {
+	for k := 0; k < nbNodes; k++ {
+		node := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+		listNodes = append(listNodes, node)
+	}
+
+	for _, node := range listNodes {
+		for _, neighbor := range listNodes {
+			if neighbor.GetAddr() != node.GetAddr() {
+				node.AddPeer(neighbor.GetAddr())
+			}
+		}
+	}
+	return listNodes
+}
+
+func printMap(m map[string]int) {
+	println("┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓")
+	for key, value := range m {
+		fmt.Printf("┃ %20s ┃ %5s ┃\n", key, strconv.Itoa(value))
+		println("┠━━━━━━━━━━━━━━━━━━━━━━╋━━━━━━━┫")
+	}
 }

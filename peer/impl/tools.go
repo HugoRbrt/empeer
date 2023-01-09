@@ -1,6 +1,8 @@
 package impl
 
 import (
+	"bufio"
+	"fmt"
 	"github.com/rs/xid"
 	"go.dedis.ch/cs438/peer"
 	"go.dedis.ch/cs438/storage"
@@ -8,6 +10,7 @@ import (
 	"go.dedis.ch/cs438/types"
 	"io"
 	"math/rand"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -581,4 +584,27 @@ func ContainFullyKnown(files []types.FileInfo) string {
 		}
 	}
 	return ""
+}
+
+func Parser(path string) ([]string, error) {
+	var listOfWords []string
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func(f *os.File) {
+		err := f.Close()
+		if err != nil {
+			fmt.Println(err)
+		}
+	}(f)
+	scanner := bufio.NewScanner(f)
+	scanner.Split(bufio.ScanWords)
+
+	for scanner.Scan() {
+		word := strings.ToLower(scanner.Text())
+		word = regexp.MustCompile(`[^a-zA-Z]+`).ReplaceAllString(word, "")
+		listOfWords = append(listOfWords, word)
+	}
+	return listOfWords, scanner.Err()
 }

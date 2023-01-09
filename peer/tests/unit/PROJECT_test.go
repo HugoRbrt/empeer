@@ -1,11 +1,12 @@
 package unit
 
 import (
-	"github.com/rs/zerolog/log"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	z "go.dedis.ch/cs438/internal/testing"
+	"go.dedis.ch/cs438/peer/impl"
+	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/transport/channel"
-	"strconv"
 	"testing"
 )
 
@@ -154,8 +155,9 @@ func Test_PROJECT_splitList(t *testing.T) {
 //	map reduce beginning
 //
 // ┌───► B
-// A───► C
-func Test_PROJECT_mrSplitSend(t *testing.T) {
+// ┌───► C
+// A───► D
+func Test_PROJECT_mr_all_letters(t *testing.T) {
 	transp := channel.NewTransport()
 
 	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
@@ -185,52 +187,64 @@ func Test_PROJECT_mrSplitSend(t *testing.T) {
 
 	data := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"}
 
-	err := node1.MapReduce(3, data)
-	require.Equal(t, err, nil)
+	err, res := node1.MapReduce(3, data)
+	require.Equal(t, nil, err)
+	require.Equal(t, 26, len(res))
+	for _, value := range res {
+		require.Equal(t, 1, value)
+	}
 
 }
 
-// P-6
+// P-7
 //
-//	map reduce beginning
+//	test for the parser function
+func Test_PROJECT_parser(t *testing.T) {
+	filePath := "dataTest/P7.txt"
+
+	data, err := impl.Parser(filePath)
+	require.Equal(t, err, nil)
+	require.Equal(t, []string{"this", "file", "is", "a", "test", "for", "the", "parser", "function"}, data)
+
+}
+
+// P-7
+//
+//	map reduce test to count word which appears multiple time
 //
 // ┌───► B
 // A───► C
-func Test_PROJECT_map(t *testing.T) {
-	toMap := func(nbMapper int, data []string) (error, []map[string]int) {
-		listMaps := make([]map[string]int, nbMapper)
-		var keys []string
-		// 97 is the value for 'a', 26 is the number of letters in the alphabet
-		widthReducer := 27 / nbMapper
-		if 27%nbMapper != 0 {
-			widthReducer += 1
-		}
-		log.Info().Msgf("width: " + strconv.Itoa(widthReducer))
-		for _, d := range data {
-			index := (int(d[0]) - 97) / widthReducer
-			if _, ok := listMaps[index][d]; ok {
-				listMaps[index][d]++
-			} else {
-				correspondingMap := listMaps[index]
-				if correspondingMap == nil {
-					listMaps[index] = make(map[string]int)
-				}
-				listMaps[index][d] = 1
-				keys = append(keys, d)
-			}
-		}
-		return nil, listMaps
-	}
+func Test_PROJECT_counter_test(t *testing.T) {
+	transp := channel.NewTransport()
+	filePath := "dataTest/P8.txt"
 
-	data := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"}
+	nodes := CreateCompleteNetwork(5, t, transp)
 
-	err, result := toMap(15, data)
-	for nb, r := range result {
-		log.Info().Msgf("MAPPER n°" + strconv.Itoa(nb))
-		for key, _ := range r {
-			log.Info().Msgf(key + ": " + strconv.Itoa(r[key]))
-		}
-	}
+	data, err := impl.Parser(filePath)
 	require.Equal(t, err, nil)
 
+	err, res := nodes[0].MapReduce(4, data)
+	require.Equal(t, nil, err)
+	fmt.Println(res)
+	require.Equal(t, 5, len(res))
+
+}
+
+// -----------------------------------------------------------------------------
+// Utility functions
+
+func CreateCompleteNetwork(nbNodes int, t *testing.T, transp transport.Transport) (listNodes []z.TestNode) {
+	for k := 0; k < nbNodes; k++ {
+		node := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+		listNodes = append(listNodes, node)
+	}
+
+	for _, node := range listNodes {
+		for _, neighbor := range listNodes {
+			if neighbor.GetAddr() != node.GetAddr() {
+				node.AddPeer(neighbor.GetAddr())
+			}
+		}
+	}
+	return listNodes
 }

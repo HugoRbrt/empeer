@@ -16,13 +16,11 @@ func GenerateKeyPair(bits int) (*rsa.PrivateKey, *rsa.PublicKey) {
 	return privkey, &privkey.PublicKey
 }
 
-// rewrite this function to use rsa.sign() and rsa.verify()
 func (n *node) VerifySignature(signature []byte, hash []byte, pubkey *rsa.PublicKey) bool {
 	err := rsa.VerifyPSS(pubkey, crypto.SHA256, hash, signature, nil)
 	return err == nil
 }
 
-// rewrite this function to use rsa.sign() and rsa.verify()
 func (n *node) SignHash(hash []byte, privkey *rsa.PrivateKey) []byte {
 	signature, err := rsa.SignPSS(rand.Reader, privkey, crypto.SHA256, hash, nil)
 	if err != nil {
@@ -42,6 +40,14 @@ func (n *node) ComputeHashKeyForList(list []int) []byte {
 	}
 
 	return hash.Sum(nil)
+}
+
+func (n *node) GetPrivateKey() *rsa.PrivateKey {
+	return n.PrivateKey
+}
+
+func (n *node) GetPublicKey() *rsa.PublicKey {
+	return n.PublicKey
 }
 
 /*

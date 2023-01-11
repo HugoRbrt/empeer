@@ -152,6 +152,9 @@ type configTemplate struct {
 	paxosThreshold     func(uint) int
 	paxosID            uint
 	paxosProposerRetry time.Duration
+
+	MergeSortConsensus bool
+	MaliciousNode      bool
 }
 
 func newConfigTemplate() configTemplate {
@@ -188,6 +191,9 @@ func newConfigTemplate() configTemplate {
 		},
 		paxosID:            0,
 		paxosProposerRetry: time.Second * 5,
+
+		MergeSortConsensus: false,
+		MaliciousNode:      false,
 	}
 }
 
@@ -198,6 +204,20 @@ type Option func(*configTemplate)
 func WithAutostart(autostart bool) Option {
 	return func(ct *configTemplate) {
 		ct.autoStart = autostart
+	}
+}
+
+// WithMergeSortConsensus sets the MergeConsensus option.
+func WithMergeSortConsensus(mgConsensus bool) Option {
+	return func(ct *configTemplate) {
+		ct.MergeSortConsensus = mgConsensus
+	}
+}
+
+// WithMaliciousNode sets the malicious option.
+func WithMaliciousNode(malicious bool) Option {
+	return func(ct *configTemplate) {
+		ct.MaliciousNode = malicious
 	}
 }
 
@@ -326,6 +346,8 @@ func NewTestNode(t require.TestingT, f peer.Factory, trans transport.Transport,
 	config.PaxosProposerRetry = template.paxosProposerRetry
 	config.EmpeerThreshold = template.EmpeerThreshold
 	config.EmpeerTimeout = template.EmpeerTimeout
+	config.MergeSortConsensus = template.MergeSortConsensus
+	config.MaliciousNode = template.MaliciousNode
 
 	node := f(config)
 
@@ -421,6 +443,10 @@ func (t TestNode) GetStorage() storage.Storage {
 
 func (t TestNode) MergeSort(data []int) (error, []int) {
 	return t.Peer.MergeSort(data)
+}
+
+func (t TestNode) ComputeHashKeyForList(list []int) []byte {
+	return t.Peer.ComputeHashKeyForList(list)
 }
 
 // Status allows to check if something has been called or not.

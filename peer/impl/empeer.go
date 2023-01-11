@@ -1,12 +1,14 @@
 package impl
 
 import (
+	"encoding/hex"
 	"errors"
 	"github.com/rs/xid"
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"math"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -46,6 +48,7 @@ func (n *node) MergeSort(data []int) (error, []int) {
 	result2 := make(chan []int)
 	// send instructions
 	instrNb := xid.New().String()
+
 	n.empeer.ms.alreadytryNeighbor[instrNb] = []string{n.conf.Socket.GetAddress()}
 	go func(c chan error) {
 		e, r1 := n.SendComputation(data1, instrNb)
@@ -87,28 +90,95 @@ func (n *node) SendComputation(data []int, instructionNb string) (error, []int) 
 	var err error
 	var result []int
 	err = transport.TimeoutError(0)
+	timeout := n.ComputeTimeOut(len(data))
 	for err == transport.TimeoutError(0) {
-		// while we don't have any response, we retry with another neighbor
-		n.empeer.ms.mu.Lock()
-		ok, neighbor := n.table.GetRandomNeighbors(n.empeer.ms.alreadytryNeighbor[instructionNb])
-		if !ok {
-			// if no neighbor was found: do nothing
+		packetID := xid.New().String()
+		for i := 0; i < n.MaxNeighboor; i++ {
+			n.empeer.ms.mu.Lock()
+			ok, neighbor := n.table.GetRandomNeighbors(n.empeer.ms.alreadytryNeighbor[instructionNb])
+			if !ok {
+				// if no neighbor was found: do nothing
+				n.empeer.ms.mu.Unlock()
+				return errors.New("not enough neighbor"), nil
+			}
+			n.empeer.ms.alreadytryNeighbor[instructionNb] = append(n.empeer.ms.alreadytryNeighbor[instructionNb], neighbor)
+			// we have the neighbor public key
 			n.empeer.ms.mu.Unlock()
-			return errors.New("not enough neighbor"), nil
+
+			// send the request using a go function
+
+			err, result = n.TrySendComputation(data, neighbor, packetID)
+			if err != nil {
+				return err, result
+			}
 		}
-		n.empeer.ms.alreadytryNeighbor[instructionNb] = append(n.empeer.ms.alreadytryNeighbor[instructionNb], neighbor)
-		n.empeer.ms.mu.Unlock()
-		err, result = n.TrySendComputation(data, neighbor)
+
+		n.waitEmpeer.requestNotif(packetID)
+		select {
+		case res := <-n.waitEmpeer.waitNotif(packetID):
+			var hashArray []string
+			for i := range res { // get all the hash of the response
+				h := n.ComputeHashKeyForList(res[i].arr)
+				hashArray = append(hashArray, hex.EncodeToString(h))
+			}
+
+			// check if at least two hashes are the same, if only one hash return true
+			ok, trustedH := atLeastTwoItemsAreSame(hashArray)
+			if !ok {
+				return errors.New("the 3 hashes are differents"), nil
+			}
+
+			if !allItemsAreTheSame(hashArray) {
+				log.Info().Msgf("The three hashes are not the same but at least two are identical -> accepted")
+			}
+
+			trustedHByte, err := hex.DecodeString(trustedH)
+			if err != nil {
+				return err, nil
+			}
+
+			var re NotificationEmpeerData
+			var errorFound bool
+			errorFound = true
+			for i := range res {
+				if compareTwoArray(res[i].hash, trustedHByte) {
+					re = res[i]
+					errorFound = false
+				}
+			}
+
+			if errorFound {
+				return errors.New("invalid hash"), nil
+			}
+
+			pubKey, ok := n.PublicKeyMap.Get(re.ip)
+			if !ok {
+				return errors.New("public key not found"), nil
+			}
+
+			//log.Log().Msgf("%s received %v from %s", n.conf.Socket.GetAddress(), re.arr, re.ip)
+			if !n.VerifySignature(re.signature, re.hash, pubKey) {
+				return errors.New("signature not valid"), nil
+			}
+
+			return nil, re.arr
+
+		case <-time.After(timeout): // resend the message to another neighbor
+			n.waitEmpeer.deleteNotif(packetID)
+			err = transport.TimeoutError(0)
+			log.Info().Msgf("timeout")
+			break
+		}
 	}
 	return err, result
 }
 
 // TrySendComputation send an instruction message to the neighbour en wait until  timeout is finished
-func (n *node) TrySendComputation(data []int, neighbor string) (error, []int) {
-	timeout := n.ComputeTimeOut(len(data))
+func (n *node) TrySendComputation(data []int, neighbor, packetID string) (error, []int) {
+
 	// create the message
 	msg := types.InstructionMessage{
-		PacketID: xid.New().String(),
+		PacketID: packetID,
 		Data:     data,
 	}
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
@@ -131,24 +201,53 @@ func (n *node) TrySendComputation(data []int, neighbor string) (error, []int) {
 		return err, nil
 	}
 	//wait the response
-	n.waitEmpeer.requestNotif(msg.PacketID)
-	select {
-	case res := <-n.waitEmpeer.waitNotif(msg.PacketID):
-		arr := res.arr
-		h := n.ComputeHashKeyForList(arr)
-		pubKey, ok := n.PublicKeyMap.Get(res.ip)
-		if !ok {
-			return errors.New("public key not found"), nil
-		}
-
-		if !n.VerifySignature(res.signature, h, pubKey) {
-			return errors.New("signature not valid"), nil
-		}
-
-		return nil, arr
-	case <-time.After(timeout): // resend the message to another neighbor
-		return transport.TimeoutError(0), nil
+	return nil, nil
+}
+func compareTwoArray(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
 	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+func atLeastTwoItemsAreSame(arr []string) (bool, string) {
+	// Create a map to count the occurrences of each element in the array
+	if len(arr) == 1 {
+		return true, arr[0]
+	}
+	occurrences := make(map[string]int)
+	for _, v := range arr {
+		occurrences[v]++
+	}
+
+	// Check if at least two elements are the same
+	atLeastTwoSame := false
+	var mostFrequent string
+	for k, v := range occurrences {
+		if v >= 2 {
+			atLeastTwoSame = true
+			mostFrequent = k
+			break
+		}
+	}
+
+	// Return the result and the most frequent element
+	return atLeastTwoSame, mostFrequent
+}
+
+// create a boolean function to check if three items in a string array are the same
+func allItemsAreTheSame(arr []string) bool {
+	// Create a map to count the occurrences of each element in the array
+	occurrences := make(map[string]int)
+	for _, v := range arr {
+		occurrences[v]++
+	}
+
+	return len(occurrences) == 1
 }
 
 // MergeData merge two sorted data into one
@@ -180,7 +279,7 @@ func (n *node) MergeData(left []int, right []int) (result []int) {
 }
 
 func (n *node) ComputeTimeOut(length int) time.Duration {
-	return n.conf.EmpeerTimeout * time.Duration(math.RoundToEven(float64(length)*math.Log(float64(length))/float64(n.conf.EmpeerThreshold)))
+	return n.conf.EmpeerTimeout * time.Duration(math.RoundToEven(float64(length)*math.Log(float64(length))/float64(n.conf.EmpeerThreshold))) * 5000
 }
 
 // SLAVE VIEW
@@ -210,6 +309,8 @@ func (n *node) ComputeLocally(data []int) []int {
 
 func (n *node) ComputeEmpeer(instructionMsg types.InstructionMessage, master string) error {
 	data := instructionMsg.Data
+	// log data variable
+	//log.Error().Msgf("data value %v", data)
 	// process computation locally if data is small enough
 	if uint(len(instructionMsg.Data)) <= n.conf.EmpeerThreshold {
 		result := n.ComputeLocally(instructionMsg.Data)
@@ -261,6 +362,12 @@ func (n *node) ComputeEmpeer(instructionMsg types.InstructionMessage, master str
 }
 
 func (n *node) SendResponse(sortedData []int, instructionMsg types.InstructionMessage, origin string) error {
+	if n.conf.MaliciousNode {
+		// shuffle sortedData
+		rand.Seed(time.Now().UnixNano())
+		rand.Shuffle(len(sortedData), func(i, j int) { sortedData[i], sortedData[j] = sortedData[j], sortedData[i] })
+	}
+	//
 	// compute hash of list of integers
 	hash := n.ComputeHashKeyForList(sortedData)
 	// sign the hash
@@ -271,6 +378,8 @@ func (n *node) SendResponse(sortedData []int, instructionMsg types.InstructionMe
 		PacketID:  instructionMsg.PacketID,
 		SortData:  sortedData,
 		Signature: signature,
+		Hash:      hash,
+		Pk:        n.PublicKey,
 	}
 
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(response)

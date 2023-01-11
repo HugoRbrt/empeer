@@ -95,9 +95,11 @@ type ResultMessage struct {
 	// sorted data
 	SortData  []int
 	Signature []byte
+	Hash      []byte
+	Pk        *rsa.PublicKey
 }
 
 type PublicKeyExchange struct {
-	// PacketID is the PacketID this acknowledgment is for
+	// PublicKey is the public key of the node
 	PublicKey *rsa.PublicKey
 }

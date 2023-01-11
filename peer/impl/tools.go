@@ -152,7 +152,9 @@ func (pr *RumorsManager) Process(addr string, r types.Rumor, sr *ConcurrentRoute
 	(*pr).rumorsHistory[addr] = append((*pr).rumorsHistory[addr], r)
 	// update routing table
 	if relayBy != "" {
-		sr.SetEntry(addr, relayBy)
+		if addr == relayBy {
+			sr.SetEntry(addr, relayBy)
+		}
 	}
 }
 

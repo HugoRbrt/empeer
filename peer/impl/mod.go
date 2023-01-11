@@ -38,9 +38,16 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.waitEmpeer.Init()
 
 	// crypto init
-	node.PrivateKey, node.PublicKey = GenerateKeyPair(16)
+	node.PrivateKey, node.PublicKey = GenerateKeyPair(2048)
 
 	node.PublicKeyMap.Init()
+	node.ResMap = make(map[string][]NotificationEmpeerData)
+
+	if conf.MergeSortConsensus {
+		node.MaxNeighboor = 3
+	} else {
+		node.MaxNeighboor = 1
+	}
 
 	return &node
 }
@@ -82,6 +89,15 @@ type node struct {
 	PublicKey  *rsa.PublicKey
 
 	PublicKeyMap PublicKeyExchangeMap
+
+	PublicKeyMapMutex sync.Mutex
+
+	ResMap       map[string][]NotificationEmpeerData
+	ResMapMutex  sync.Mutex
+	MaxNeighboor int
+}
+
+func (n *node) setMergeConsensus(v bool) {
 }
 
 // HOMEWORK 0
@@ -106,6 +122,7 @@ func (n *node) Start() error {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.TLCMessage{}, n.ExecTLCMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.InstructionMessage{}, n.ExecInstructionMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.ResultMessage{}, n.ExecResultMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.PublicKeyExchange{}, n.ExecPublicKeyExchange)
 
 	// we signal when the goroutine starts and when it ends
 	n.wg.Add(1)

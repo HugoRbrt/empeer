@@ -458,7 +458,67 @@ func Test_PROJECT_deep_computation_with_consensus_many_malicious(t *testing.T) {
 	require.NotEqual(t, []int{1, 2, 2, 3, 3, 4, 5}, result)
 }
 
+// P-6
+//
 //	map reduce beginning
+//
+// ┌───► B
+// ┌───► C
+// A───► D
+func Test_PROJECT_mr_all_letters(t *testing.T) {
+	transp := channel.NewTransport()
+
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node1.Stop()
+
+	node2 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node2.Stop()
+
+	node3 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node3.Stop()
+
+	node4 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node4.Stop()
+
+	node1.AddPeer(node2.GetAddr())
+	node1.AddPeer(node3.GetAddr())
+	node1.AddPeer(node4.GetAddr())
+	node2.AddPeer(node1.GetAddr())
+	node2.AddPeer(node3.GetAddr())
+	node2.AddPeer(node4.GetAddr())
+	node3.AddPeer(node1.GetAddr())
+	node3.AddPeer(node2.GetAddr())
+	node3.AddPeer(node4.GetAddr())
+	node4.AddPeer(node1.GetAddr())
+	node4.AddPeer(node2.GetAddr())
+	node4.AddPeer(node3.GetAddr())
+
+	data := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"}
+
+	err, res := node1.MapReduce(3, data)
+	require.Equal(t, nil, err)
+	require.Equal(t, 26, len(res))
+	for _, value := range res {
+		require.Equal(t, 1, value)
+	}
+
+}
+
+// P-7
+//
+//	test for the parser function
+func Test_PROJECT_parser(t *testing.T) {
+	filePath := "dataTest/P7.txt"
+
+	data, err := impl.Parser(filePath)
+	require.Equal(t, err, nil)
+	require.Equal(t, []string{"this", "file", "is", "a", "test", "for", "the", "parser", "function"}, data)
+
+}
+
+// P-7
+//
+//	map reduce test to count word which appears multiple time
 //
 // ┌───► B
 // A───► C

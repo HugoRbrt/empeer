@@ -126,4 +126,8 @@ type MRResponseMessage struct {
 	RequestID string
 	// data is a list of words to count
 	SortedData map[string]int
+
+	Signature []byte
+
+	Hash []byte
 }

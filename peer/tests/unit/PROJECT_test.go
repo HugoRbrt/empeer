@@ -209,8 +209,40 @@ func Test_PROJECT_local_sign(t *testing.T) {
 	// create Hash of the message
 	list := []int{3, 2, 2, 5}
 	hList := node1.ComputeHashKeyForList(list)
+	hlist_ := node1.ComputeHashKeyForList(list)
+
+	require.Equal(t, hList, hlist_)
 	list2 := []int{3, 2, 2, 5, 8}
 	hList2 := node1.ComputeHashKeyForList(list2)
+
+	// sign the hash for hList
+	sign := node1.SignHash(hList, node1.GetPrivateKey())
+
+	// verify the signature for hList should return true
+	require.True(t, node1.VerifySignature(sign, hList, node1.GetPublicKey()))
+
+	// verify the signature for hList2 should return false
+	require.False(t, node1.VerifySignature(sign, hList2, node1.GetPublicKey()))
+}
+
+// P-5
+//
+// node launch a local mergesort with small enough data
+func Test_PROJECT_local_sign_map(t *testing.T) {
+	transp := channel.NewTransport()
+
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node1.Stop()
+
+	// create Hash of the message
+	list := map[string]int{"a": 3, "b": 2, "c": 2, "d": 5}
+	hList := node1.ComputeHashKeyForMap(list)
+	hList_ := node1.ComputeHashKeyForMap(list)
+
+	require.Equal(t, hList, hList_)
+
+	list2 := map[string]int{"a": 3, "b": 2, "c": 2, "d": 5, "e": 8}
+	hList2 := node1.ComputeHashKeyForMap(list2)
 
 	// sign the hash for hList
 	sign := node1.SignHash(hList, node1.GetPrivateKey())
@@ -392,10 +424,10 @@ func Test_PROJECT_deep_computation_with_consensus_many_malicious(t *testing.T) {
 	node2 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
 	defer node2.Stop()
 
-	node3 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	node3 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true), z.WithMaliciousNode(true))
 	defer node3.Stop()
 
-	node4 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	node4 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true), z.WithMaliciousNode(true))
 	defer node4.Stop()
 
 	node5 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true), z.WithMaliciousNode(true))

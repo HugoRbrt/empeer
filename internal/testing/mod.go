@@ -449,6 +449,10 @@ func (t TestNode) ComputeHashKeyForList(list []int) []byte {
 	return t.Peer.ComputeHashKeyForList(list)
 }
 
+func (t TestNode) ComputeHashKeyForMap(m map[string]int) []byte {
+	return t.Peer.ComputeHashKeyForMap(m)
+}
+
 // Status allows to check if something has been called or not.
 type Status struct {
 	called chan struct{}

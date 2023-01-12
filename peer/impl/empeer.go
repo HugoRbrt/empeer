@@ -534,9 +534,12 @@ func (n *node) Map(nbReducers int, data []string) []map[string]int {
 func (n *node) DistributeToReducers(dicts []map[string]int, reducers []string, requestID string) error {
 	for num, dict := range dicts {
 		reducer := reducers[num]
+		// compute hash of map
+		hash := n.ComputeHashKeyForMap(dict)
+		// sign the hash
+		signature := n.SignHash(hash, n.PrivateKey)
 		//send data to the corresponding reducer
-		msg := types.MRResponseMessage{RequestID: requestID, SortedData: dict}
-		// TODO: Sign msg before sending
+		msg := types.MRResponseMessage{RequestID: requestID, SortedData: dict, Signature: signature, Hash: hash}
 		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
 		if err != nil {
 			return err

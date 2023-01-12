@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"bytes"
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
@@ -546,7 +547,18 @@ func (n *node) MRInstructionMessage(msg types.Message, pkt transport.Packet) err
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", instrMsg)
 	}
-	// TODO : send public key to all the reducers
+	pk := append(instrMsg.Reducers, pkt.Header.Source)
+	// send public key to all the reducers
+	for _, reducer := range pk {
+		hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), reducer, 0)
+		msgResponse := types.PublicKeyExchange{PublicKey: n.PublicKey}
+		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msgResponse)
+		if err != nil {
+			return err
+		}
+		pktResponse := transport.Packet{Header: &hdr, Msg: &transMsg}
+		err = n.conf.Socket.Send(reducer, pktResponse, time.Millisecond*1000)
+	}
 
 	//log.Info().Msgf(instrMsg.String())
 	//prepare statement for reducer
@@ -571,7 +583,22 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 	//log.Info().Msgf(n.conf.Socket.GetAddress() + ": " + resMsg.String())
 	// store de result
 
-	// TODO : check the result signature
+	// compute hash of resMsg.SortedData
+	n.ResMapMutex.Lock()
+	hash := n.ComputeHashKeyForMap(resMsg.SortedData)
+	if bytes.Compare(hash, resMsg.Hash) != 0 {
+		return xerrors.Errorf("Two hashes are incorrect")
+	}
+	// get the public key of the mapper
+	pk, ok := n.PublicKeyMap.Get(pkt.Header.Source)
+	if !ok {
+		return xerrors.Errorf("no public key for %s", pkt.Header.Source)
+	}
+	// check if signature is valid
+	if !n.VerifySignature(resMsg.Signature, hash, pk) {
+		return xerrors.Errorf("signature is not valid")
+	}
+	n.ResMapMutex.Unlock()
 
 	allDataReceived := n.empeer.mr.DataReceived(resMsg.RequestID, resMsg.SortedData)
 	if allDataReceived {
@@ -584,7 +611,12 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 			n.empeer.mr.result <- result
 		} else {
 			//if i am a reducer: send the result to the initiator
-			msg := types.MRResponseMessage{RequestID: resMsg.RequestID, SortedData: result}
+			// compute hash of map
+			hash := n.ComputeHashKeyForMap(result)
+			// sign the hash
+			signature := n.SignHash(hash, n.PrivateKey)
+			//send data to the corresponding reducer
+			msg := types.MRResponseMessage{RequestID: resMsg.RequestID, SortedData: result, Hash: hash, Signature: signature}
 			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
 			if err != nil {
 				return err

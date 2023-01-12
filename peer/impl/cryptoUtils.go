@@ -4,6 +4,8 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"sort"
 	"strconv"
 )
 
@@ -39,6 +41,53 @@ func (n *node) ComputeHashKeyForList(list []int) []byte {
 		}
 	}
 
+	return hash.Sum(nil)
+}
+
+/*
+// rewrites the above function but instead of []int use map[String]int
+func (n *node) ComputeHashKeyForMap(m map[string]int) []byte {
+	hash := crypto.SHA256.New()
+
+	b := make([]byte, 0)
+
+	for k, v := range m {
+		b = append(b, []byte(k+strconv.Itoa(v))...)
+	}
+	_, err := hash.Write(b)
+	if err != nil {
+		panic(err)
+	}
+
+	return hash.Sum(nil)
+}
+*/
+
+func (n *node) ComputeHashKeyForMap(m map[string]int) []byte {
+	// Create a new hash
+	hash := sha256.New()
+
+	// Create a byte slice to hold the key-value pairs
+	pairs := make([]byte, 0)
+
+	// Get the keys of the map
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// Sort the keys
+	sort.Strings(keys)
+
+	// Iterate through the map and append the key-value pairs to the slice
+	for _, k := range keys {
+		v := m[k]
+		pairs = append(pairs, []byte(k+strconv.Itoa(v))...)
+	}
+
+	// Write the slice to the hash
+	hash.Write(pairs)
+
+	// Return the sum of the hash
 	return hash.Sum(nil)
 }
 

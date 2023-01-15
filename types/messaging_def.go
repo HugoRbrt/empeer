@@ -131,27 +131,3 @@ type MRResponseMessage struct {
 
 	Hash []byte
 }
-
-// MRInstructionMessage gives a list of data and a list of reducers for response
-//
-// - implements types.Message
-// - implemented in PROJECT
-type MRInstructionMessage struct {
-	// RequestID is the ID for the MapReduce request
-	RequestID string
-	// Reducers is the sorted list of Reducers
-	Reducers []string
-	// Data is a list of words to count
-	Data []string
-}
-
-// MRResponseMessage gives a dictionary of processed data
-//
-// - implements types.Message
-// - implemented in PROJECT
-type MRResponseMessage struct {
-	// requestID is the ID for the MapReduce request
-	RequestID string
-	// data is a list of words to count
-	SortedData map[string]int
-}

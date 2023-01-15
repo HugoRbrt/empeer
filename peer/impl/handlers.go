@@ -517,7 +517,6 @@ func (n *node) ExecResultMessage(msg types.Message, pkt transport.Packet) error 
 	// log the data
 
 	if len(n.ResMap[resMsg.PacketID]) == n.MaxNeighboor {
-		log.Info().Msgf("Len received for packetId %s %v", pkt.Header.PacketID, len(n.ResMap[resMsg.PacketID]))
 		n.waitEmpeer.signalNotif(resMsg.PacketID, n.ResMap[resMsg.PacketID])
 	}
 	n.ResMapMutex.Unlock()
@@ -606,7 +605,6 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 		result := n.ConcatResults(resMsg.RequestID)
 		initiator := n.empeer.mr.Initiator(resMsg.RequestID)
 		if initiator == n.conf.Socket.GetAddress() {
-			log.Info().Msgf("all data received")
 			//if i am the initiator: return the result
 			n.empeer.mr.result <- result
 		} else {
@@ -617,60 +615,6 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 			signature := n.SignHash(hash, n.PrivateKey)
 			//send data to the corresponding reducer
 			msg := types.MRResponseMessage{RequestID: resMsg.RequestID, SortedData: result, Hash: hash, Signature: signature}
-			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
-			if err != nil {
-				return err
-			}
-			header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), initiator, 0)
-			pkt := transport.Packet{Header: &header, Msg: &transMsg}
-			err = n.conf.Socket.Send(initiator, pkt, time.Millisecond*1000)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (n *node) MRInstructionMessage(msg types.Message, pkt transport.Packet) error {
-	// cast the message to its actual type. You assume it is the right type.
-	instrMsg, ok := msg.(*types.MRInstructionMessage)
-	if !ok {
-		return xerrors.Errorf("wrong type: %T", instrMsg)
-	}
-	//log.Info().Msgf(instrMsg.String())
-	//prepare statement for reducer
-	n.empeer.mr.SetParam(instrMsg.RequestID, len(instrMsg.Reducers), pkt.Header.Source)
-	// compute and distributes result to reducers
-	data := instrMsg.Data
-	nbReducers := len(instrMsg.Reducers)
-	dictionaries := n.Map(nbReducers, data)
-	err := n.DistributeToReducers(dictionaries, instrMsg.Reducers, instrMsg.RequestID)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error {
-	// cast the message to its actual type. You assume it is the right type.
-	resMsg, ok := msg.(*types.MRResponseMessage)
-	if !ok {
-		return xerrors.Errorf("wrong type: %T", resMsg)
-	}
-	//log.Info().Msgf(n.conf.Socket.GetAddress() + ": " + resMsg.String())
-	// store de result
-	allDataReceived := n.empeer.mr.DataReceived(resMsg.RequestID, resMsg.SortedData)
-	if allDataReceived {
-		//concat all data
-		result := n.ConcatResults(resMsg.RequestID)
-		initiator := n.empeer.mr.Initiator(resMsg.RequestID)
-		if initiator == n.conf.Socket.GetAddress() {
-			//if i am the initiator: return the result
-			n.empeer.mr.result <- result
-		} else {
-			//if i am a reducer: send the result to the initiator
-			msg := types.MRResponseMessage{RequestID: resMsg.RequestID, SortedData: result}
 			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
 			if err != nil {
 				return err

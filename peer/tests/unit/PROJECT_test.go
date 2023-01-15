@@ -9,6 +9,7 @@ import (
 	"go.dedis.ch/cs438/transport/channel"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // P-1
@@ -33,19 +34,22 @@ func Test_PROJECT_local_computation(t *testing.T) {
 func Test_PROJECT_shallow_computation(t *testing.T) {
 	transp := channel.NewTransport()
 
-	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithHeartbeat(time.Millisecond*500))
 	defer node1.Stop()
 
-	node2 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	node2 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithHeartbeat(time.Millisecond*500))
 	defer node2.Stop()
 
-	node3 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	node3 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithHeartbeat(time.Millisecond*500))
 	defer node3.Stop()
 
 	node1.AddPeer(node2.GetAddr())
 	node1.AddPeer(node3.GetAddr())
 
+	time.Sleep(time.Millisecond * 1000)
+
 	err, result := node1.MergeSort([]int{3, 2, 2, 5, 1, 3, 4})
+
 	require.Equal(t, err, nil)
 	require.Equal(t, result, []int{1, 2, 2, 3, 3, 4, 5})
 }
@@ -75,7 +79,7 @@ func Test_PROJECT_semi_deep_computation(t *testing.T) {
 	node3.AddPeer(node2.GetAddr())
 
 	err, result := node1.MergeSort([]int{5, 1, 2, 4, 3, 4, 2, 5, 3, 1, 9, 0})
-	require.Equal(t, err, nil)
+	require.Equal(t, nil, err)
 	require.Equal(t, result, []int{0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 9})
 }
 
@@ -104,7 +108,7 @@ func Test_PROJECT_deep_computation(t *testing.T) {
 	node3.AddPeer(node2.GetAddr())
 
 	err, result := node1.MergeSort([]int{5, 1, 2, 4, 3, 4, 2, 5, 3, 1, 9, 0, 2, 7, 4, 9, 6, 10, 0, -1, 6, 4, 8})
-	require.Equal(t, err, nil)
+	require.Equal(t, nil, err)
 	require.Equal(t, result, []int{-1, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6, 7, 8, 9, 9, 10})
 }
 
@@ -149,6 +153,340 @@ func Test_PROJECT_splitList(t *testing.T) {
 	require.Equal(t, result[1], []string{"5", "6", "7", "8"})
 	require.Equal(t, result[2], []string{"9", "10"})
 
+}
+
+// P-6
+//
+//	map reduce beginning
+//
+// ┌───► B
+// A───► C
+func Test_PROJECT_mrSplitSend(t *testing.T) {
+	transp := channel.NewTransport()
+
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node1.Stop()
+
+	node2 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node2.Stop()
+
+	node3 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node3.Stop()
+
+	node4 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node4.Stop()
+
+	node1.AddPeer(node2.GetAddr())
+	node1.AddPeer(node3.GetAddr())
+	node1.AddPeer(node4.GetAddr())
+	node2.AddPeer(node1.GetAddr())
+	node2.AddPeer(node3.GetAddr())
+	node2.AddPeer(node4.GetAddr())
+	node3.AddPeer(node1.GetAddr())
+	node3.AddPeer(node2.GetAddr())
+	node3.AddPeer(node4.GetAddr())
+	node4.AddPeer(node1.GetAddr())
+	node4.AddPeer(node2.GetAddr())
+	node4.AddPeer(node3.GetAddr())
+
+	data := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"}
+
+	err, _ := node1.MapReduce(3, data)
+	require.Equal(t, err, nil)
+
+}
+
+// P-5
+//
+// node launch a local mergesort with small enough data
+func Test_PROJECT_local_sign(t *testing.T) {
+	transp := channel.NewTransport()
+
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node1.Stop()
+
+	// create Hash of the message
+	list := []int{3, 2, 2, 5}
+	hList := node1.ComputeHashKeyForList(list)
+	hlist_ := node1.ComputeHashKeyForList(list)
+
+	require.Equal(t, hList, hlist_)
+	list2 := []int{3, 2, 2, 5, 8}
+	hList2 := node1.ComputeHashKeyForList(list2)
+
+	// sign the hash for hList
+	sign := node1.SignHash(hList, node1.GetPrivateKey())
+
+	// verify the signature for hList should return true
+	require.True(t, node1.VerifySignature(sign, hList, node1.GetPublicKey()))
+
+	// verify the signature for hList2 should return false
+	require.False(t, node1.VerifySignature(sign, hList2, node1.GetPublicKey()))
+}
+
+// P-5
+//
+// node launch a local mergesort with small enough data
+func Test_PROJECT_local_sign_map(t *testing.T) {
+	transp := channel.NewTransport()
+
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
+	defer node1.Stop()
+
+	// create Hash of the message
+	list := map[string]int{"a": 3, "b": 2, "c": 2, "d": 5}
+	hList := node1.ComputeHashKeyForMap(list)
+	hList_ := node1.ComputeHashKeyForMap(list)
+
+	require.Equal(t, hList, hList_)
+
+	list2 := map[string]int{"a": 3, "b": 2, "c": 2, "d": 5, "e": 8}
+	hList2 := node1.ComputeHashKeyForMap(list2)
+
+	// sign the hash for hList
+	sign := node1.SignHash(hList, node1.GetPrivateKey())
+
+	// verify the signature for hList should return true
+	require.True(t, node1.VerifySignature(sign, hList, node1.GetPublicKey()))
+
+	// verify the signature for hList2 should return false
+	require.False(t, node1.VerifySignature(sign, hList2, node1.GetPublicKey()))
+}
+
+// P-6
+//
+// node launch a deep mergesort (slave became a master on several layers) with consensus
+// ┌───► B
+// A───► C
+func Test_PROJECT_deep_computation_with_consensus(t *testing.T) {
+	transp := channel.NewTransport()
+
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node1.Stop()
+
+	node2 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node2.Stop()
+
+	node3 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node3.Stop()
+
+	node4 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node4.Stop()
+
+	node5 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node5.Stop()
+
+	node6 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node6.Stop()
+
+	node7 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node7.Stop()
+
+	node1.AddPeer(node2.GetAddr())
+	node1.AddPeer(node3.GetAddr())
+	node1.AddPeer(node4.GetAddr())
+	node1.AddPeer(node5.GetAddr())
+	node1.AddPeer(node6.GetAddr())
+	node1.AddPeer(node7.GetAddr())
+	node2.AddPeer(node1.GetAddr())
+	node2.AddPeer(node3.GetAddr())
+	node2.AddPeer(node4.GetAddr())
+	node2.AddPeer(node5.GetAddr())
+	node2.AddPeer(node6.GetAddr())
+	node2.AddPeer(node7.GetAddr())
+	node3.AddPeer(node1.GetAddr())
+	node3.AddPeer(node2.GetAddr())
+	node3.AddPeer(node4.GetAddr())
+	node3.AddPeer(node5.GetAddr())
+	node3.AddPeer(node6.GetAddr())
+	node3.AddPeer(node7.GetAddr())
+	node4.AddPeer(node1.GetAddr())
+	node4.AddPeer(node2.GetAddr())
+	node4.AddPeer(node3.GetAddr())
+	node4.AddPeer(node5.GetAddr())
+	node4.AddPeer(node6.GetAddr())
+	node4.AddPeer(node7.GetAddr())
+	node5.AddPeer(node1.GetAddr())
+	node5.AddPeer(node2.GetAddr())
+	node5.AddPeer(node3.GetAddr())
+	node5.AddPeer(node4.GetAddr())
+	node5.AddPeer(node6.GetAddr())
+	node5.AddPeer(node7.GetAddr())
+	node6.AddPeer(node1.GetAddr())
+	node6.AddPeer(node2.GetAddr())
+	node6.AddPeer(node3.GetAddr())
+	node6.AddPeer(node4.GetAddr())
+	node6.AddPeer(node5.GetAddr())
+	node6.AddPeer(node7.GetAddr())
+	node7.AddPeer(node1.GetAddr())
+	node7.AddPeer(node2.GetAddr())
+	node7.AddPeer(node3.GetAddr())
+	node7.AddPeer(node4.GetAddr())
+	node7.AddPeer(node5.GetAddr())
+	node7.AddPeer(node6.GetAddr())
+
+	err, result := node1.MergeSort([]int{5, 1, 2, 4, 3, 4, 2, 5, 3, 1, 9, 0, 2, 7, 4, 9, 6, 10, 0, -1, 6, 4, 8})
+	require.Equal(t, nil, err)
+	require.Equal(t, result, []int{-1, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6, 7, 8, 9, 9, 10})
+}
+
+// P-7
+//
+// node launch a deep mergesort (slave became a master on several layers) with consensus
+// one node is a malicious one, thhe merge sort still need to perform
+// ┌───► B
+// A───► C
+func Test_PROJECT_deep_computation_with_consensus_one_malicious(t *testing.T) {
+	transp := channel.NewTransport()
+
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node1.Stop()
+
+	node2 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node2.Stop()
+
+	node3 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node3.Stop()
+
+	node4 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node4.Stop()
+
+	node5 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node5.Stop()
+
+	node6 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node6.Stop()
+
+	node7 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true), z.WithMaliciousNode(true))
+	defer node7.Stop()
+
+	node1.AddPeer(node2.GetAddr())
+	node1.AddPeer(node3.GetAddr())
+	node1.AddPeer(node4.GetAddr())
+	node1.AddPeer(node5.GetAddr())
+	node1.AddPeer(node6.GetAddr())
+	node1.AddPeer(node7.GetAddr())
+	node2.AddPeer(node1.GetAddr())
+	node2.AddPeer(node3.GetAddr())
+	node2.AddPeer(node4.GetAddr())
+	node2.AddPeer(node5.GetAddr())
+	node2.AddPeer(node6.GetAddr())
+	node2.AddPeer(node7.GetAddr())
+	node3.AddPeer(node1.GetAddr())
+	node3.AddPeer(node2.GetAddr())
+	node3.AddPeer(node4.GetAddr())
+	node3.AddPeer(node5.GetAddr())
+	node3.AddPeer(node6.GetAddr())
+	node3.AddPeer(node7.GetAddr())
+	node4.AddPeer(node1.GetAddr())
+	node4.AddPeer(node2.GetAddr())
+	node4.AddPeer(node3.GetAddr())
+	node4.AddPeer(node5.GetAddr())
+	node4.AddPeer(node6.GetAddr())
+	node4.AddPeer(node7.GetAddr())
+	node5.AddPeer(node1.GetAddr())
+	node5.AddPeer(node2.GetAddr())
+	node5.AddPeer(node3.GetAddr())
+	node5.AddPeer(node4.GetAddr())
+	node5.AddPeer(node6.GetAddr())
+	node5.AddPeer(node7.GetAddr())
+	node6.AddPeer(node1.GetAddr())
+	node6.AddPeer(node2.GetAddr())
+	node6.AddPeer(node3.GetAddr())
+	node6.AddPeer(node4.GetAddr())
+	node6.AddPeer(node5.GetAddr())
+	node6.AddPeer(node7.GetAddr())
+	node7.AddPeer(node1.GetAddr())
+	node7.AddPeer(node2.GetAddr())
+	node7.AddPeer(node3.GetAddr())
+	node7.AddPeer(node4.GetAddr())
+	node7.AddPeer(node5.GetAddr())
+	node7.AddPeer(node6.GetAddr())
+
+	err, result := node1.MergeSort([]int{5, 1, 2, 4, 3, 4, 2, 5, 3, 1, 9, 0, 2, 7, 4, 9, 6, 10, 0, -1, 6, 4, 8})
+	require.Equal(t, nil, err)
+	require.Equal(t, []int{-1, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6, 7, 8, 9, 9, 10}, result)
+}
+
+// P-8
+//
+// node launch a deep mergesort with consensus
+// many node are malicious, thhe merge sort will fail and an error is expected
+// ┌───► B
+// A───► C
+func Test_PROJECT_deep_computation_with_consensus_many_malicious(t *testing.T) {
+	transp := channel.NewTransport()
+
+	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node1.Stop()
+
+	node2 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true))
+	defer node2.Stop()
+
+	node3 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true), z.WithMaliciousNode(true))
+	defer node3.Stop()
+
+	node4 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true), z.WithMaliciousNode(true))
+	defer node4.Stop()
+
+	node5 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true), z.WithMaliciousNode(true))
+	defer node5.Stop()
+
+	node6 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true), z.WithMaliciousNode(true))
+	defer node6.Stop()
+
+	node7 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0", z.WithMergeSortConsensus(true), z.WithMaliciousNode(true))
+	defer node7.Stop()
+
+	node1.AddPeer(node2.GetAddr())
+	node1.AddPeer(node3.GetAddr())
+	node1.AddPeer(node4.GetAddr())
+	node1.AddPeer(node5.GetAddr())
+	node1.AddPeer(node6.GetAddr())
+	node1.AddPeer(node7.GetAddr())
+	node2.AddPeer(node1.GetAddr())
+	node2.AddPeer(node3.GetAddr())
+	node2.AddPeer(node4.GetAddr())
+	node2.AddPeer(node5.GetAddr())
+	node2.AddPeer(node6.GetAddr())
+	node2.AddPeer(node7.GetAddr())
+	node3.AddPeer(node1.GetAddr())
+	node3.AddPeer(node2.GetAddr())
+	node3.AddPeer(node4.GetAddr())
+	node3.AddPeer(node5.GetAddr())
+	node3.AddPeer(node6.GetAddr())
+	node3.AddPeer(node7.GetAddr())
+	node4.AddPeer(node1.GetAddr())
+	node4.AddPeer(node2.GetAddr())
+	node4.AddPeer(node3.GetAddr())
+	node4.AddPeer(node5.GetAddr())
+	node4.AddPeer(node6.GetAddr())
+	node4.AddPeer(node7.GetAddr())
+	node5.AddPeer(node1.GetAddr())
+	node5.AddPeer(node2.GetAddr())
+	node5.AddPeer(node3.GetAddr())
+	node5.AddPeer(node4.GetAddr())
+	node5.AddPeer(node6.GetAddr())
+	node5.AddPeer(node7.GetAddr())
+	node6.AddPeer(node1.GetAddr())
+	node6.AddPeer(node2.GetAddr())
+	node6.AddPeer(node3.GetAddr())
+	node6.AddPeer(node4.GetAddr())
+	node6.AddPeer(node5.GetAddr())
+	node6.AddPeer(node7.GetAddr())
+	node7.AddPeer(node1.GetAddr())
+	node7.AddPeer(node2.GetAddr())
+	node7.AddPeer(node3.GetAddr())
+	node7.AddPeer(node4.GetAddr())
+	node7.AddPeer(node5.GetAddr())
+	node7.AddPeer(node6.GetAddr())
+
+	time.Sleep(time.Millisecond * 1000)
+
+	err, result := node1.MergeSort([]int{3, 2, 2, 5, 1, 3, 4})
+
+	require.Error(t, err)
+	require.NotEqual(t, []int{1, 2, 2, 3, 3, 4, 5}, result)
 }
 
 // P-6

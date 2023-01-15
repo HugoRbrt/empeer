@@ -1,6 +1,9 @@
 package types
 
-import "go.dedis.ch/cs438/transport"
+import (
+	"crypto/rsa"
+	"go.dedis.ch/cs438/transport"
+)
 
 // ChatMessage is a message sent to exchange text messages between nodes.
 //
@@ -90,7 +93,43 @@ type ResultMessage struct {
 	// PacketID is the PacketID this acknowledgment is for
 	PacketID string
 	// sorted data
-	SortData []int
+	SortData  []int
+	Signature []byte
+	Hash      []byte
+	Pk        *rsa.PublicKey
+}
+
+type PublicKeyExchange struct {
+	// PublicKey is the public key of the node
+	PublicKey *rsa.PublicKey
+}
+
+// MRInstructionMessage gives a list of data and a list of reducers for response
+//
+// - implements types.Message
+// - implemented in PROJECT
+type MRInstructionMessage struct {
+	// RequestID is the ID for the MapReduce request
+	RequestID string
+	// Reducers is the sorted list of Reducers
+	Reducers []string
+	// Data is a list of words to count
+	Data []string
+}
+
+// MRResponseMessage gives a dictionary of processed data
+//
+// - implements types.Message
+// - implemented in PROJECT
+type MRResponseMessage struct {
+	// requestID is the ID for the MapReduce request
+	RequestID string
+	// data is a list of words to count
+	SortedData map[string]int
+
+	Signature []byte
+
+	Hash []byte
 }
 
 // MRInstructionMessage gives a list of data and a list of reducers for response

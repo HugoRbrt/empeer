@@ -3,6 +3,7 @@ package impl
 import (
 	"context"
 	"crypto"
+	"crypto/rsa"
 	"encoding/hex"
 	"errors"
 	"github.com/rs/xid"
@@ -35,6 +36,19 @@ func NewPeer(conf peer.Configuration) peer.Peer {
 	node.ctx, node.cancel = context.WithCancel(context.Background())
 	node.empeer.Init(&node)
 	node.waitEmpeer.Init()
+
+	// crypto init
+	node.PrivateKey, node.PublicKey = GenerateKeyPair(2048)
+
+	node.PublicKeyMap.Init()
+	node.ResMap = make(map[string][]NotificationEmpeerData)
+
+	if conf.MergeSortConsensus {
+		node.MaxNeighboor = 3
+	} else {
+		node.MaxNeighboor = 1
+	}
+
 	return &node
 }
 
@@ -70,6 +84,20 @@ type node struct {
 	//Empeer attributes
 	empeer     Empeer
 	waitEmpeer NotificationEmpeer
+
+	PrivateKey *rsa.PrivateKey
+	PublicKey  *rsa.PublicKey
+
+	PublicKeyMap PublicKeyExchangeMap
+
+	PublicKeyMapMutex sync.Mutex
+
+	ResMap       map[string][]NotificationEmpeerData
+	ResMapMutex  sync.Mutex
+	MaxNeighboor int
+}
+
+func (n *node) setMergeConsensus(v bool) {
 }
 
 // HOMEWORK 0
@@ -94,6 +122,7 @@ func (n *node) Start() error {
 	n.conf.MessageRegistry.RegisterMessageCallback(types.TLCMessage{}, n.ExecTLCMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.InstructionMessage{}, n.ExecInstructionMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.ResultMessage{}, n.ExecResultMessage)
+	n.conf.MessageRegistry.RegisterMessageCallback(types.PublicKeyExchange{}, n.ExecPublicKeyExchange)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.MRInstructionMessage{}, n.MRInstructionMessage)
 	n.conf.MessageRegistry.RegisterMessageCallback(types.MRResponseMessage{}, n.MRResponseMessage)
 
@@ -114,6 +143,16 @@ func (n *node) Start() error {
 		err := n.Heartbeat()
 		if err != nil {
 			log.Error().Msgf("error from heartbeat: %v", err.Error())
+		}
+	}()
+
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		//start heartbeat mechanism
+		err := n.PublicKeyExchangeHeartbeat()
+		if err != nil {
+			log.Error().Msgf("error from heartbeatPublicKeyExchange: %v", err.Error())
 		}
 	}()
 
@@ -342,6 +381,34 @@ func (n *node) Heartbeat() error {
 			return nil
 		case <-time.After(n.conf.HeartbeatInterval):
 			err = n.Broadcast(transEmptyMsg)
+			if err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// PublicKeyExchangeHeartbeat implement the heartbeat mechanism to send public key to every other peer
+func (n *node) PublicKeyExchangeHeartbeat() error {
+	if n.conf.HeartbeatInterval == 0 {
+		// if interval of 0 is given then the Heartbeat mechanism must not be activated
+		return nil
+	}
+	publicKeyMsg, err := n.conf.MessageRegistry.MarshalMessage(types.PublicKeyExchange{PublicKey: n.PublicKey})
+	if err != nil {
+		return err
+	}
+	err = n.Broadcast(publicKeyMsg)
+	if err != nil {
+		return err
+	}
+	for {
+		// check if Stop was called (and stop goroutine if so)
+		select {
+		case <-n.ctx.Done():
+			return nil
+		case <-time.After(n.conf.HeartbeatInterval):
+			err = n.Broadcast(publicKeyMsg)
 			if err != nil {
 				return err
 			}

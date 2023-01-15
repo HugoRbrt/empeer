@@ -1,6 +1,7 @@
 package impl
 
 import (
+	"bytes"
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
@@ -473,6 +474,19 @@ func (n *node) ExecInstructionMessage(msg types.Message, pkt transport.Packet) e
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", instrMsg)
 	}
+	// send public key to the pkt.source
+	hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), pkt.Header.Source, 0)
+	msgResponse := types.PublicKeyExchange{PublicKey: n.PublicKey}
+	transMsg, err := n.conf.MessageRegistry.MarshalMessage(msgResponse)
+	if err != nil {
+		return err
+	}
+	pktResponse := transport.Packet{Header: &hdr, Msg: &transMsg}
+	err = n.conf.Socket.Send(pkt.Header.Source, pktResponse, time.Millisecond*1000)
+	if err != nil {
+		return err
+	}
+
 	go func() {
 		err := n.ComputeEmpeer(*instrMsg, pkt.Header.Source)
 		if err != nil {
@@ -488,7 +502,133 @@ func (n *node) ExecResultMessage(msg types.Message, pkt transport.Packet) error 
 	if !ok {
 		return xerrors.Errorf("wrong type: %T", resMsg)
 	}
-	n.waitEmpeer.signalNotif(resMsg.PacketID, resMsg.SortData)
+
+	// if length of n.ResMap[pkt.Header.PacketID] is less than 3
+	// add the data to the map
+	n.ResMapMutex.Lock()
+	data := NotificationEmpeerData{
+		arr:       resMsg.SortData,
+		signature: resMsg.Signature,
+		ip:        pkt.Header.Source,
+		hash:      resMsg.Hash,
+		pk:        resMsg.Pk,
+	}
+	n.ResMap[resMsg.PacketID] = append(n.ResMap[resMsg.PacketID], data)
+	// log the data
+
+	if len(n.ResMap[resMsg.PacketID]) == n.MaxNeighboor {
+		log.Info().Msgf("Len received for packetId %s %v", pkt.Header.PacketID, len(n.ResMap[resMsg.PacketID]))
+		n.waitEmpeer.signalNotif(resMsg.PacketID, n.ResMap[resMsg.PacketID])
+	}
+	n.ResMapMutex.Unlock()
+
+	return nil
+}
+
+func (n *node) ExecPublicKeyExchange(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	resMsg, ok := msg.(*types.PublicKeyExchange)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", resMsg)
+	}
+
+	n.PublicKeyMapMutex.Lock()
+	//if _, ok := n.PublicKeyMap.Get(pkt.Header.Source); !ok { // we set the public key only once
+	n.PublicKeyMap.SetEntry(pkt.Header.Source, resMsg.PublicKey)
+	//}
+	n.PublicKeyMapMutex.Unlock()
+
+	return nil
+}
+
+func (n *node) MRInstructionMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	instrMsg, ok := msg.(*types.MRInstructionMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", instrMsg)
+	}
+	pk := append(instrMsg.Reducers, pkt.Header.Source)
+	// send public key to all the reducers
+	for _, reducer := range pk {
+		hdr := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), reducer, 0)
+		msgResponse := types.PublicKeyExchange{PublicKey: n.PublicKey}
+		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msgResponse)
+		if err != nil {
+			return err
+		}
+		pktResponse := transport.Packet{Header: &hdr, Msg: &transMsg}
+		err = n.conf.Socket.Send(reducer, pktResponse, time.Millisecond*1000)
+	}
+
+	//log.Info().Msgf(instrMsg.String())
+	//prepare statement for reducer
+	n.empeer.mr.SetParam(instrMsg.RequestID, len(instrMsg.Reducers), pkt.Header.Source)
+	// compute and distributes result to reducers
+	data := instrMsg.Data
+	nbReducers := len(instrMsg.Reducers)
+	dictionaries := n.Map(nbReducers, data)
+	err := n.DistributeToReducers(dictionaries, instrMsg.Reducers, instrMsg.RequestID)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error {
+	// cast the message to its actual type. You assume it is the right type.
+	resMsg, ok := msg.(*types.MRResponseMessage)
+	if !ok {
+		return xerrors.Errorf("wrong type: %T", resMsg)
+	}
+	//log.Info().Msgf(n.conf.Socket.GetAddress() + ": " + resMsg.String())
+	// store de result
+
+	// compute hash of resMsg.SortedData
+	n.ResMapMutex.Lock()
+	hash := n.ComputeHashKeyForMap(resMsg.SortedData)
+	if bytes.Compare(hash, resMsg.Hash) != 0 {
+		return xerrors.Errorf("Two hashes are incorrect")
+	}
+	// get the public key of the mapper
+	pk, ok := n.PublicKeyMap.Get(pkt.Header.Source)
+	if !ok {
+		return xerrors.Errorf("no public key for %s", pkt.Header.Source)
+	}
+	// check if signature is valid
+	if !n.VerifySignature(resMsg.Signature, hash, pk) {
+		return xerrors.Errorf("signature is not valid")
+	}
+	n.ResMapMutex.Unlock()
+
+	allDataReceived := n.empeer.mr.DataReceived(resMsg.RequestID, resMsg.SortedData)
+	if allDataReceived {
+		//concat all data
+		result := n.ConcatResults(resMsg.RequestID)
+		initiator := n.empeer.mr.Initiator(resMsg.RequestID)
+		if initiator == n.conf.Socket.GetAddress() {
+			log.Info().Msgf("all data received")
+			//if i am the initiator: return the result
+			n.empeer.mr.result <- result
+		} else {
+			//if i am a reducer: send the result to the initiator
+			// compute hash of map
+			hash := n.ComputeHashKeyForMap(result)
+			// sign the hash
+			signature := n.SignHash(hash, n.PrivateKey)
+			//send data to the corresponding reducer
+			msg := types.MRResponseMessage{RequestID: resMsg.RequestID, SortedData: result, Hash: hash, Signature: signature}
+			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
+			if err != nil {
+				return err
+			}
+			header := transport.NewHeader(n.conf.Socket.GetAddress(), n.conf.Socket.GetAddress(), initiator, 0)
+			pkt := transport.Packet{Header: &header, Msg: &transMsg}
+			err = n.conf.Socket.Send(initiator, pkt, time.Millisecond*1000)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

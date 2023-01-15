@@ -526,7 +526,6 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 		result := n.ConcatResults(resMsg.RequestID)
 		initiator := n.empeer.mr.Initiator(resMsg.RequestID)
 		if initiator == n.conf.Socket.GetAddress() {
-			log.Info().Msgf("all data received")
 			//if i am the initiator: return the result
 			n.empeer.mr.result <- result
 		} else {

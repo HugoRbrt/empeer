@@ -1,6 +1,14 @@
 # CS-438_decentralized_project
 
+## Project part
+all the tests for this part is defined in 'peer/tests/unit/PROJECT_test.go'.
+From this file you will see the two methods which permits to initialize a: 
+- merge sort computation (with the method MergeSort(data []int))
+- map reduce computation (with the method MapReduce(nbMapper int, data []int))
+these two methods returns the corresponding error and result for the computation.
 
+Due to the withdrawal of one of the project participants, the graphic integration of the tool could not be realized.
+It is nevertheless possible to test it by adding its own tests in the file 'peer/tests/unit/PROJECT_test.go' and run the corresponding tests.
 
 ## Getting started
 

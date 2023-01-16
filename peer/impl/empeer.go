@@ -52,8 +52,9 @@ func (n *node) MergeSort(data []int) (error, []int) {
 	result2 := make(chan []int)
 	// send instructions
 	instrNb := xid.New().String()
-
+	n.empeer.ms.mu.Lock()
 	n.empeer.ms.alreadytryNeighbor[instrNb] = []string{n.conf.Socket.GetAddress()}
+	n.empeer.ms.mu.Unlock()
 	go func(c chan error) {
 		e, r1 := n.SendComputation(data1, instrNb)
 		if e != nil {
@@ -330,7 +331,9 @@ func (n *node) ComputeEmpeer(instructionMsg types.InstructionMessage, master str
 	result1 := make(chan []int)
 	result2 := make(chan []int)
 	// send instructions
+	n.empeer.ms.mu.Lock()
 	n.empeer.ms.alreadytryNeighbor[instructionMsg.PacketID] = []string{n.conf.Socket.GetAddress()}
+	n.empeer.ms.mu.Unlock()
 	go func(c chan error) {
 		e, r1 := n.SendComputation(data1, instructionMsg.PacketID)
 		if e != nil {
@@ -487,7 +490,6 @@ func (n *node) SplitSendData(nbMapper int, data []string) error {
 	requestID := xid.New().String()
 	for numMapper, mapper := range mappers {
 		//choose which data to send
-		log.Info().Msgf("%s", numMapper)
 		data := listData[numMapper]
 		//send data to mapper
 		msg := types.MRInstructionMessage{RequestID: requestID, Reducers: mappers, Data: data}

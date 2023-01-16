@@ -2,15 +2,14 @@ package unit
 
 import (
 	"fmt"
-	"strconv"
-	"testing"
-	"time"
-
 	"github.com/stretchr/testify/require"
 	z "go.dedis.ch/cs438/internal/testing"
 	"go.dedis.ch/cs438/peer/impl"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/transport/channel"
+	"strconv"
+	"testing"
+	"time"
 )
 
 // P-1

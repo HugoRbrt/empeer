@@ -589,8 +589,6 @@ func ContainFullyKnown(files []types.FileInfo) string {
 	return ""
 }
 
-/**/
-// ConcurrentRouteTable define a safe way to access the RoutingTable.
 type PublicKeyExchangeMap struct {
 	R  map[string]*rsa.PublicKey
 	mu sync.Mutex
@@ -657,5 +655,4 @@ func Parser(path string) ([]string, error) {
 		listOfWords = append(listOfWords, word)
 	}
 	return listOfWords, scanner.Err()
-
 }

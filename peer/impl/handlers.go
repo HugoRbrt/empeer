@@ -1,13 +1,14 @@
 package impl
 
 import (
+	"math/rand"
+	"regexp"
+	"time"
+
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
 	"golang.org/x/xerrors"
-	"math/rand"
-	"regexp"
-	"time"
 )
 
 // Handler for each types of message
@@ -514,7 +515,6 @@ func (n *node) ExecResultMessage(msg types.Message, pkt transport.Packet) error 
 	// log the data
 
 	if len(n.ResMap[resMsg.PacketID]) == n.MaxNeighboor {
-		//log.Info().Msgf("Len received for packetId %s %v", pkt.Header.PacketID, len(n.ResMap[resMsg.PacketID]))
 		n.waitEmpeer.signalNotif(resMsg.PacketID, n.ResMap[resMsg.PacketID])
 	}
 	n.ResMapMutex.Unlock()
@@ -601,7 +601,6 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 		result := n.ConcatResults(resMsg.RequestID)
 		initiator := n.empeer.mr.Initiator(resMsg.RequestID)
 		if initiator == n.conf.Socket.GetAddress() {
-			log.Info().Msgf("all data received")
 			//if i am the initiator: return the result
 			n.empeer.mr.result <- result
 		} else {

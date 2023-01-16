@@ -144,8 +144,10 @@ func (n *node) SendComputation(data []int, instructionNb string) (error, []int) 
 			var re NotificationEmpeerData
 			var errorFound bool
 			errorFound = true
+
 			for i := range res {
-				if compareTwoArray(res[i].hash, trustedHByte) {
+				curr_h := n.ComputeHashKeyForList(res[i].arr)
+				if compareTwoArray(curr_h, trustedHByte) {
 					re = res[i]
 					errorFound = false
 				}
@@ -161,7 +163,7 @@ func (n *node) SendComputation(data []int, instructionNb string) (error, []int) 
 			}
 
 			//log.Log().Msgf("%s received %v from %s", n.conf.Socket.GetAddress(), re.arr, re.ip)
-			if !n.VerifySignature(re.signature, re.hash, pubKey) {
+			if !n.VerifySignature(re.signature, trustedHByte, pubKey) {
 				return errors.New("signature not valid"), nil
 			}
 
@@ -382,8 +384,6 @@ func (n *node) SendResponse(sortedData []int, instructionMsg types.InstructionMe
 		PacketID:  instructionMsg.PacketID,
 		SortData:  sortedData,
 		Signature: signature,
-		Hash:      hash,
-		Pk:        n.PublicKey,
 	}
 
 	transMsg, err := n.conf.MessageRegistry.MarshalMessage(response)
@@ -539,7 +539,7 @@ func (n *node) DistributeToReducers(dicts []map[string]int, reducers []string, r
 		// sign the hash
 		signature := n.SignHash(hash, n.PrivateKey)
 		//send data to the corresponding reducer
-		msg := types.MRResponseMessage{RequestID: requestID, SortedData: dict, Signature: signature, Hash: hash}
+		msg := types.MRResponseMessage{RequestID: requestID, SortedData: dict, Signature: signature}
 		transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
 		if err != nil {
 			return err

@@ -1,7 +1,6 @@
 package impl
 
 import (
-	"bytes"
 	"github.com/rs/zerolog/log"
 	"go.dedis.ch/cs438/transport"
 	"go.dedis.ch/cs438/types"
@@ -510,14 +509,12 @@ func (n *node) ExecResultMessage(msg types.Message, pkt transport.Packet) error 
 		arr:       resMsg.SortData,
 		signature: resMsg.Signature,
 		ip:        pkt.Header.Source,
-		hash:      resMsg.Hash,
-		pk:        resMsg.Pk,
 	}
 	n.ResMap[resMsg.PacketID] = append(n.ResMap[resMsg.PacketID], data)
 	// log the data
 
 	if len(n.ResMap[resMsg.PacketID]) == n.MaxNeighboor {
-		log.Info().Msgf("Len received for packetId %s %v", pkt.Header.PacketID, len(n.ResMap[resMsg.PacketID]))
+		//log.Info().Msgf("Len received for packetId %s %v", pkt.Header.PacketID, len(n.ResMap[resMsg.PacketID]))
 		n.waitEmpeer.signalNotif(resMsg.PacketID, n.ResMap[resMsg.PacketID])
 	}
 	n.ResMapMutex.Unlock()
@@ -586,9 +583,7 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 	// compute hash of resMsg.SortedData
 	n.ResMapMutex.Lock()
 	hash := n.ComputeHashKeyForMap(resMsg.SortedData)
-	if bytes.Compare(hash, resMsg.Hash) != 0 {
-		return xerrors.Errorf("Two hashes are incorrect")
-	}
+
 	// get the public key of the mapper
 	pk, ok := n.PublicKeyMap.Get(pkt.Header.Source)
 	if !ok {
@@ -616,7 +611,7 @@ func (n *node) MRResponseMessage(msg types.Message, pkt transport.Packet) error 
 			// sign the hash
 			signature := n.SignHash(hash, n.PrivateKey)
 			//send data to the corresponding reducer
-			msg := types.MRResponseMessage{RequestID: resMsg.RequestID, SortedData: result, Hash: hash, Signature: signature}
+			msg := types.MRResponseMessage{RequestID: resMsg.RequestID, SortedData: result, Signature: signature}
 			transMsg, err := n.conf.MessageRegistry.MarshalMessage(msg)
 			if err != nil {
 				return err

@@ -95,8 +95,6 @@ type ResultMessage struct {
 	// sorted data
 	SortData  []int
 	Signature []byte
-	Hash      []byte
-	Pk        *rsa.PublicKey
 }
 
 type PublicKeyExchange struct {
@@ -128,6 +126,4 @@ type MRResponseMessage struct {
 	SortedData map[string]int
 
 	Signature []byte
-
-	Hash []byte
 }

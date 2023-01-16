@@ -115,91 +115,7 @@ func Test_PROJECT_deep_computation(t *testing.T) {
 
 // P-5
 //
-// test for splitList function
-func Test_PROJECT_splitList(t *testing.T) {
-	transp := channel.NewTransport()
-
-	funcTest := func(list []string, nb int) [][]string {
-		var chunks [][]string
-		size := len(list) / nb
-		if len(list)%nb != 0 {
-			size = size + 1
-		}
-		for i := 0; i < len(list); i += size {
-			end := i + size
-			// necessary check to avoid slicing beyond
-			// slice capacity
-			if end > len(list) {
-				end = len(list)
-			}
-			chunks = append(chunks, list[i:end])
-		}
-
-		return chunks
-	}
-
-	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
-	defer node1.Stop()
-	data := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
-
-	result := funcTest(data, 5)
-	require.Equal(t, len(result), 5)
-	require.Equal(t, result[0], []string{"1", "2"})
-	require.Equal(t, result[1], []string{"3", "4"})
-	require.Equal(t, result[4], []string{"9", "10"})
-
-	result = funcTest(data, 3)
-	require.Equal(t, len(result), 3)
-	require.Equal(t, result[0], []string{"1", "2", "3", "4"})
-	require.Equal(t, result[1], []string{"5", "6", "7", "8"})
-	require.Equal(t, result[2], []string{"9", "10"})
-
-}
-
-// P-6
-//
-//	map reduce beginning
-//
-// ┌───► B
-// A───► C
-func Test_PROJECT_mrSplitSend(t *testing.T) {
-	transp := channel.NewTransport()
-
-	node1 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
-	defer node1.Stop()
-
-	node2 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
-	defer node2.Stop()
-
-	node3 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
-	defer node3.Stop()
-
-	node4 := z.NewTestNode(t, peerFac, transp, "127.0.0.1:0")
-	defer node4.Stop()
-
-	node1.AddPeer(node2.GetAddr())
-	node1.AddPeer(node3.GetAddr())
-	node1.AddPeer(node4.GetAddr())
-	node2.AddPeer(node1.GetAddr())
-	node2.AddPeer(node3.GetAddr())
-	node2.AddPeer(node4.GetAddr())
-	node3.AddPeer(node1.GetAddr())
-	node3.AddPeer(node2.GetAddr())
-	node3.AddPeer(node4.GetAddr())
-	node4.AddPeer(node1.GetAddr())
-	node4.AddPeer(node2.GetAddr())
-	node4.AddPeer(node3.GetAddr())
-
-	data := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"}
-
-	err, _ := node1.MapReduce(3, data)
-	require.Equal(t, err, nil)
-
-}
-
-// P-5
-//
-// node launch a local mergesort with small enough data
+// test the ComputeHashKeyForList function
 func Test_PROJECT_local_sign(t *testing.T) {
 	transp := channel.NewTransport()
 
@@ -225,9 +141,9 @@ func Test_PROJECT_local_sign(t *testing.T) {
 	require.False(t, node1.VerifySignature(sign, hList2, node1.GetPublicKey()))
 }
 
-// P-5
+// P-6
 //
-// node launch a local mergesort with small enough data
+// test the ComputeHashKeyForMap function
 func Test_PROJECT_local_sign_map(t *testing.T) {
 	transp := channel.NewTransport()
 
@@ -254,11 +170,9 @@ func Test_PROJECT_local_sign_map(t *testing.T) {
 	require.False(t, node1.VerifySignature(sign, hList2, node1.GetPublicKey()))
 }
 
-// P-6
+// P-7
 //
 // node launch a deep mergesort (slave became a master on several layers) with consensus
-// ┌───► B
-// A───► C
 func Test_PROJECT_deep_computation_with_consensus(t *testing.T) {
 	transp := channel.NewTransport()
 
@@ -331,12 +245,10 @@ func Test_PROJECT_deep_computation_with_consensus(t *testing.T) {
 	require.Equal(t, result, []int{-1, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6, 7, 8, 9, 9, 10})
 }
 
-// P-7
+// P-8
 //
 // node launch a deep mergesort (slave became a master on several layers) with consensus
-// one node is a malicious one, thhe merge sort still need to perform
-// ┌───► B
-// A───► C
+// one node is a malicious, the merge sort still need to perform
 func Test_PROJECT_deep_computation_with_consensus_one_malicious(t *testing.T) {
 	transp := channel.NewTransport()
 
@@ -409,12 +321,10 @@ func Test_PROJECT_deep_computation_with_consensus_one_malicious(t *testing.T) {
 	require.Equal(t, []int{-1, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6, 7, 8, 9, 9, 10}, result)
 }
 
-// P-8
+// P-9
 //
 // node launch a deep mergesort with consensus
-// many node are malicious, thhe merge sort will fail and an error is expected
-// ┌───► B
-// A───► C
+// many node are malicious, the merge sort will fail and an error is expected
 func Test_PROJECT_deep_computation_with_consensus_many_malicious(t *testing.T) {
 	transp := channel.NewTransport()
 
@@ -490,13 +400,9 @@ func Test_PROJECT_deep_computation_with_consensus_many_malicious(t *testing.T) {
 	require.NotEqual(t, []int{1, 2, 2, 3, 3, 4, 5}, result)
 }
 
-// P-6
+// P-10
 //
 //	map reduce beginning
-//
-// ┌───► B
-// ┌───► C
-// A───► D
 func Test_PROJECT_mr_all_letters(t *testing.T) {
 	transp := channel.NewTransport()
 
@@ -536,7 +442,7 @@ func Test_PROJECT_mr_all_letters(t *testing.T) {
 
 }
 
-// P-7
+// P-11
 //
 //	test for the parser function
 func Test_PROJECT_parser(t *testing.T) {
@@ -548,12 +454,9 @@ func Test_PROJECT_parser(t *testing.T) {
 
 }
 
-// P-7
+// P-12
 //
 //	map reduce test to count word which appears multiple time
-//
-// ┌───► B
-// A───► C
 func Test_PROJECT_counter_test(t *testing.T) {
 	transp := channel.NewTransport()
 	filePath := "dataTest/P8.txt"

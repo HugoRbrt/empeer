@@ -1,4 +1,4 @@
-# CS-438_decentralized_project
+# Empeer: Peer-to-peer messaging system
 
 ## Project part
 all the tests for this part is defined in 'peer/tests/unit/PROJECT_test.go'.
